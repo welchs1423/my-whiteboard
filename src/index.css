@@ -1,0 +1,4 @@
+body {
+  margin: 0;
+  overflow: hidden; /* 스크롤바 방지 */
+}
