@@ -1,9 +1,10 @@
 import './App.css';
+import Board from './components/Board';
 
 function App() {
   return (
-    <div style={{ width: '100vw', height: '100vh', backgroundColor: '#f3f4f6' }}>
-      <h1>내 화이트보드 준비 완료!</h1>
+    <div style={{backgroundColor: '#f3f4f6'}}>
+      <Board />
     </div>
   );
 }
