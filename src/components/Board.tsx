@@ -8,10 +8,13 @@ interface LineData {
     color: string;
 }
 
+const COLORS = ['#000000', '#ef4444', '#3b82f6', '#22c55e', '#f59e0b'];
+
 export default function Board() {
   // 캔버스에 그려진 모든 선들의 데이터를 담는 상태 (State)
   const [lines, setLines] = useState<LineData[]>([]);
   // 현재 마우스를 누른 상태로 그림을 그리고 있는지 여부 (화면 렌더링과 무관하므로 useRef 사용)
+  const [currentColor, setCurrentColor] = useState<string>(COLORS[0]);
   const isDrawing = useRef(false);
 
   // 1. 마우스를 클릭했을 때 (그리기 시작)
@@ -20,7 +23,7 @@ export default function Board() {
     const pos = e.target.getStage()?.getPointerPosition(); // 현재 마우스 좌표 가져오기
     // 새로운 선을 배열에 추가 (시작점 좌표)
     if (!pos) return;
-    setLines([...lines, { points: [pos.x, pos.y], color: '#000000' }]); 
+    setLines([...lines, { points: [pos.x, pos.y], color: currentColor}]); 
   };
 
   // 2. 마우스를 누른 채로 움직일 때 (선 그리기)
@@ -45,7 +48,37 @@ export default function Board() {
   };
 
   return (
-    // Stage : 가장 밑바탕이 되는 전체 캔버스 영역
+    <div style= {{ position: 'relative', width: '100vw', height: '100vh' }}>
+
+      <div style = {{
+        position:'absolute',
+        top:'20px',
+        left:'50%',
+        transform:'translateX(-50%)',
+        zIndex: 10,
+        display: 'flex',
+        gap: '10px',
+        padding: '10px',
+        backgroundColor :'white',
+        borderRadius: '12px',
+        boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+      }}>
+        {COLORS.map((color) => (
+          <button
+          key={color}
+          onClick={() => setCurrentColor(color)}
+          style={{
+            width: '32px',
+            height: '32px',
+            borderRadius: '50%',
+            backgroundColor: color,
+            border: currentColor === color ? '3px solid #94a3b8': 'none',
+            cursor: 'pointer',
+            padding: 0
+          }}
+          />
+        ))}
+      </div>
     <Stage
      width={window.innerWidth}
      height={window.innerHeight}
@@ -68,5 +101,6 @@ export default function Board() {
             ))}
         </Layer>
      </Stage>
+    </div>
   );
 }
