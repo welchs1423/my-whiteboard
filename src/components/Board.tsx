@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Stage, Layer, Line } from 'react-konva';
 import Konva from 'konva';
-import { Eraser, Pen, Trash2 } from 'lucide-react'; // 👈 Trash2 아이콘 추가
+import { Eraser, Pen, Trash2, Download } from 'lucide-react'; // 👈 Download 아이콘 추가
 import { io } from 'socket.io-client';
 
 const socket = io('http://localhost:3001');
@@ -19,28 +19,44 @@ export default function Board() {
   const [currentColor, setCurrentColor] = useState<string>(COLORS[0]);
   const [tool, setTool] = useState<string>('pen');
   const isDrawing = useRef(false);
+  
+  // 👈 1. Stage 컴포넌트에 직접 접근하기 위한 ref 추가
+  const stageRef = useRef<Konva.Stage>(null); 
 
   useEffect(() => {
-    // 다른 사람이 선을 그렸을 때
     socket.on('draw_line', (incomingLines: LineData[]) => {
       setLines(incomingLines);
     });
 
-    // 👈 다른 사람이 '전체 지우기'를 눌렀을 때 내 화면도 비움
     socket.on('clear_all', () => {
       setLines([]);
     });
 
     return () => {
       socket.off('draw_line');
-      socket.off('clear_all'); // 👈 리스너 정리 추가
+      socket.off('clear_all');
     };
   }, []);
 
-  // 👈 내가 '전체 지우기' 버튼을 눌렀을 때 실행되는 함수
   const handleClearAll = () => {
-    setLines([]); // 1. 내 화면을 비운다
-    socket.emit('clear_all'); // 2. 서버에 "다른 애들 화면도 다 지워!"라고 알린다
+    setLines([]);
+    socket.emit('clear_all');
+  };
+
+  // 👈 2. 현재 캔버스를 PNG 이미지로 다운로드하는 함수
+  const handleDownload = () => {
+    if (!stageRef.current) return;
+
+    // Stage의 현재 모습을 이미지 데이터 URL(base64)로 변환
+    const dataUrl = stageRef.current.toDataURL({ pixelRatio: 2 }); // pixelRatio: 2로 설정하면 고화질로 저장됨
+    
+    // 가상의 <a> 태그를 만들어 다운로드 트리거
+    const link = document.createElement('a');
+    link.download = `whiteboard-${Date.now()}.png`; // 파일명 설정 (예: whiteboard-123456789.png)
+    link.href = dataUrl;
+    document.body.appendChild(link);
+    link.click(); // 프로그램적으로 클릭 이벤트 발생
+    document.body.removeChild(link); // 사용 후 태그 제거
   };
 
   const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -106,18 +122,30 @@ export default function Board() {
           ))}
         </div>
 
-        {/* 👈 전체 지우기 버튼 추가 */}
-        <button 
-          onClick={handleClearAll} 
-          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: '#ef4444', display: 'flex', alignItems: 'center' }}
-          title="전체 지우기"
-        >
-          <Trash2 size={24} />
-        </button>
+        {/* 도구 모음 우측에 버튼들 배치 */}
+        <div style={{ display: 'flex', gap: '10px' }}>
+          {/* 👈 이미지 다운로드 버튼 추가 */}
+          <button 
+            onClick={handleDownload} 
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: '#6b7280', display: 'flex', alignItems: 'center' }}
+            title="이미지로 저장 (PNG)"
+          >
+            <Download size={24} />
+          </button>
+          
+          <button 
+            onClick={handleClearAll} 
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: '#ef4444', display: 'flex', alignItems: 'center' }}
+            title="전체 지우기"
+          >
+            <Trash2 size={24} />
+          </button>
+        </div>
 
       </div>
 
       <Stage
+        ref={stageRef} // 👈 3. Stage 컴포넌트에 ref 연결
         width={window.innerWidth}
         height={window.innerHeight}
         onMouseDown={handleMouseDown}
