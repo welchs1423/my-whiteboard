@@ -39,6 +39,12 @@ io.on('connection', (socket) => {
     delete users[socket.id];
     io.emit('user_list', Object.values(users));
   });
+
+   socket.on('send_message', (messageData) => {
+  // messageData 예시: { text: "안녕하세요", sender: "User-abcd", time: "21:05" }
+  // 본인을 포함한 모두에게 메시지를 전달합니다.
+  io.emit('receive_message', messageData);
+});
 });
 
 server.listen(3001, () => {
