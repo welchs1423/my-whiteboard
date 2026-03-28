@@ -6,10 +6,12 @@ import { io } from 'socket.io-client';
 
 const socket = io('http://localhost:3001');
 
+// 선 굵기 데이터를 포함하도록 인터페이스 수정
 interface LineData {
   tool: string;
   points: number[];
   color: string;
+  strokeWidth: number;
 }
 
 const COLORS = ['#000000', '#ef4444', '#3b82f6', '#22c55e', '#f59e0b'];
@@ -21,6 +23,7 @@ export default function Board() {
   const [lines, setLines] = useState<LineData[]>([]);
   const [currentColor, setCurrentColor] = useState<string>(COLORS[0]);
   const [tool, setTool] = useState<string>('pen');
+  const [strokeWidth, setStrokeWidth] = useState<number>(5); // 선 굵기 상태 추가
   const [users, setUsers] = useState<string[]>([]);
   
   const isDrawing = useRef(false);
@@ -46,7 +49,6 @@ export default function Board() {
     };
   }, []);
 
-  // 닉네임 설정 및 입장 처리
   const handleJoin = () => {
     if (nickname.trim() === '') return;
     socket.emit('set_nickname', nickname);
@@ -73,7 +75,8 @@ export default function Board() {
     isDrawing.current = true;
     const pos = e.target.getStage()?.getPointerPosition(); 
     if (!pos) return;
-    setLines([...lines, { tool, points: [pos.x, pos.y], color: currentColor }]); 
+    // 배열 추가 시 현재 설정된 굵기 값 포함
+    setLines([...lines, { tool, points: [pos.x, pos.y], color: currentColor, strokeWidth }]); 
   };
 
   const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -93,7 +96,6 @@ export default function Board() {
     isDrawing.current = false;
   };
 
-  // 입장 전 렌더링 화면
   if (!isJoined) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#f3f4f6' }}>
@@ -118,7 +120,6 @@ export default function Board() {
     );
   }
 
-  // 입장 후 렌더링 화면
   return (
     <div style={{ position: 'relative', width: '100vw', height: '100vh' }}>
       <div style={{
@@ -148,6 +149,19 @@ export default function Board() {
               }}
             />
           ))}
+        </div>
+
+        {/* 선 굵기 제어 슬라이더 컴포넌트 추가 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', borderRight: '2px solid #e5e7eb', paddingRight: '15px' }}>
+          <span style={{ fontSize: '14px', color: '#6b7280' }}>굵기</span>
+          <input 
+            type="range" 
+            min="1" 
+            max="50" 
+            value={strokeWidth} 
+            onChange={(e) => setStrokeWidth(Number(e.target.value))}
+            style={{ cursor: 'pointer' }}
+          />
         </div>
 
         <div style={{ display: 'flex', gap: '10px' }}>
@@ -193,7 +207,7 @@ export default function Board() {
               key={i}
               points={line.points}
               stroke={line.color}
-              strokeWidth={line.tool === 'eraser' ? 20 : 5}
+              strokeWidth={line.strokeWidth || 5} // 저장된 굵기 데이터 적용 (이전 데이터 호환성을 위해 기본값 5 처리)
               tension={0.5}
               lineCap="round"
               lineJoin="round"
