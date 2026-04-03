@@ -1,13 +1,13 @@
 import { useState, useRef, useEffect } from 'react';
-import { Stage, Layer, Line, Rect, Ellipse, Text } from 'react-konva';
+import { Stage, Layer, Line, Rect, Ellipse, Text, Arrow } from 'react-konva';
 import Konva from 'konva';
-import { Eraser, Pen, Trash2, Download, Users, MessageSquare, Send, Square, Circle, Undo2, Redo2, Type } from 'lucide-react';
+import { Eraser, Pen, Trash2, Download, Users, MessageSquare, Send, Square, Circle, Undo2, Redo2, Type, ArrowRight, Minus } from 'lucide-react';
 import { io } from 'socket.io-client';
 
 // 서버 연결 설정
 const socket = io('http://localhost:3001');
 
-type ToolType = 'pen' | 'eraser' | 'rect' | 'circle' | 'text';
+type ToolType = 'pen' | 'eraser' | 'rect' | 'circle' | 'text' | 'arrow' | 'straight';
 
 interface DrawElement {
   tool: ToolType;
@@ -288,6 +288,30 @@ export default function Board() {
         />
       );
     }
+    if (el.tool === 'straight' && el.points.length >= 4) {
+      return (
+        <Line
+          key={i}
+          points={[el.points[0], el.points[1], el.points[2], el.points[3]]}
+          stroke={el.color}
+          strokeWidth={el.strokeWidth}
+          lineCap="round"
+        />
+      );
+    }
+    if (el.tool === 'arrow' && el.points.length >= 4) {
+      return (
+        <Arrow
+          key={i}
+          points={[el.points[0], el.points[1], el.points[2], el.points[3]]}
+          stroke={el.color}
+          strokeWidth={el.strokeWidth}
+          fill={el.color}
+          pointerLength={12}
+          pointerWidth={10}
+        />
+      );
+    }
     return null;
   };
 
@@ -332,14 +356,30 @@ export default function Board() {
           <button onClick={() => setTool('rect')} title="사각형" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'rect' ? '#3b82f6' : '#9ca3af' }}><Square size={24} /></button>
           <button onClick={() => setTool('circle')} title="원" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'circle' ? '#3b82f6' : '#9ca3af' }}><Circle size={24} /></button>
           <button onClick={() => setTool('text')} title="텍스트" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'text' ? '#3b82f6' : '#9ca3af' }}><Type size={24} /></button>
+          <button onClick={() => setTool('straight')} title="직선" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'straight' ? '#3b82f6' : '#9ca3af' }}><Minus size={24} /></button>
+          <button onClick={() => setTool('arrow')} title="화살표" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'arrow' ? '#3b82f6' : '#9ca3af' }}><ArrowRight size={24} /></button>
         </div>
 
-        {/* 색상 팔레트 */}
-        <div style={{ display: 'flex', gap: '10px', borderRight: '2px solid #e5e7eb', paddingRight: '15px' }}>
+        {/* 색상 팔레트 + 커스텀 색상 피커 */}
+        <div style={{ display: 'flex', gap: '10px', borderRight: '2px solid #e5e7eb', paddingRight: '15px', alignItems: 'center' }}>
           {COLORS.map((color) => (
             <button key={color} onClick={() => { setCurrentColor(color); if (tool === 'eraser') setTool('pen'); }}
               style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: color, border: currentColor === color && tool !== 'eraser' ? '3px solid #3b82f6' : '1px solid #e5e7eb', cursor: 'pointer' }} />
           ))}
+          {/* 커스텀 색상 피커 */}
+          <label title="커스텀 색상" style={{ position: 'relative', width: '24px', height: '24px', cursor: 'pointer' }}>
+            <input
+              type="color"
+              value={currentColor}
+              onChange={(e) => { setCurrentColor(e.target.value); if (tool === 'eraser') setTool('pen'); }}
+              style={{ position: 'absolute', opacity: 0, width: '100%', height: '100%', cursor: 'pointer', top: 0, left: 0 }}
+            />
+            <div style={{
+              width: '24px', height: '24px', borderRadius: '50%',
+              background: 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)',
+              border: !COLORS.includes(currentColor) && tool !== 'eraser' ? '3px solid #3b82f6' : '1px solid #e5e7eb',
+            }} />
+          </label>
         </div>
 
         {/* 굵기 / 글자 크기 */}
