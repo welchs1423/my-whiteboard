@@ -1,13 +1,17 @@
 import { useState, useRef, useEffect } from 'react';
 import { Stage, Layer, Line, Rect, Ellipse, Text, Arrow } from 'react-konva';
 import Konva from 'konva';
-import { Eraser, Pen, Trash2, Download, Users, MessageSquare, Send, Square, Circle, Undo2, Redo2, Type, ArrowRight, Minus, PaintBucket, Grid2X2, ChevronDown } from 'lucide-react';
+import {
+  Eraser, Pen, Trash2, Download, Users, MessageSquare, Send, Square, Circle,
+  Undo2, Redo2, Type, ArrowRight, Minus, PaintBucket, Grid2X2, ChevronDown,
+  MousePointer, ChevronsUp, ChevronUp, ChevronsDown, FileJson, Upload,
+} from 'lucide-react';
 import { io } from 'socket.io-client';
 
 // 서버 연결 설정
 const socket = io('http://localhost:3001');
 
-type ToolType = 'pen' | 'eraser' | 'rect' | 'circle' | 'text' | 'arrow' | 'straight';
+type ToolType = 'pen' | 'eraser' | 'rect' | 'circle' | 'text' | 'arrow' | 'straight' | 'select';
 
 interface CursorData {
   x: number;
@@ -20,9 +24,9 @@ interface DrawElement {
   points: number[];
   color: string;
   strokeWidth: number;
-  filled?: boolean;  // 도형 채우기 전용
-  text?: string;     // 텍스트 도구 전용
-  fontSize?: number; // 텍스트 도구 전용
+  filled?: boolean;
+  text?: string;
+  fontSize?: number;
 }
 
 interface TextInputState {
@@ -37,6 +41,13 @@ interface ChatMessage {
   time: string;
 }
 
+interface Bounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 const COLORS = ['#000000', '#ef4444', '#3b82f6', '#22c55e', '#f59e0b'];
 const CURSOR_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6'];
 
@@ -45,42 +56,113 @@ const getCursorColor = (id: string) => {
   return CURSOR_COLORS[hash % CURSOR_COLORS.length];
 };
 
+// ── 순수 헬퍼 함수 ───────────────────────────────────────────────────────────
+
+/** 엘리먼트의 바운딩 박스를 계산 */
+function getElementBounds(el: DrawElement): Bounds | null {
+  const pad = el.strokeWidth / 2 + 2;
+  if (el.tool === 'pen' || el.tool === 'eraser') {
+    if (el.points.length < 2) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < el.points.length; i += 2) {
+      minX = Math.min(minX, el.points[i]);
+      minY = Math.min(minY, el.points[i + 1]);
+      maxX = Math.max(maxX, el.points[i]);
+      maxY = Math.max(maxY, el.points[i + 1]);
+    }
+    return { x: minX - pad, y: minY - pad, width: maxX - minX + pad * 2, height: maxY - minY + pad * 2 };
+  }
+  if (el.tool === 'rect' || el.tool === 'circle' || el.tool === 'straight' || el.tool === 'arrow') {
+    if (el.points.length < 4) return null;
+    const x = Math.min(el.points[0], el.points[2]);
+    const y = Math.min(el.points[1], el.points[3]);
+    const w = Math.abs(el.points[2] - el.points[0]);
+    const h = Math.abs(el.points[3] - el.points[1]);
+    return { x: x - pad, y: y - pad, width: w + pad * 2, height: h + pad * 2 };
+  }
+  if (el.tool === 'text' && el.text) {
+    const fontSize = el.fontSize || 20;
+    return {
+      x: el.points[0],
+      y: el.points[1],
+      width: el.text.length * fontSize * 0.62 + 10,
+      height: fontSize * 1.5,
+    };
+  }
+  return null;
+}
+
+/** 포인트가 어떤 엘리먼트 위에 있는지 반환 (맨 위 우선) */
+function getElementAtPoint(elements: DrawElement[], x: number, y: number): number | null {
+  for (let i = elements.length - 1; i >= 0; i--) {
+    const b = getElementBounds(elements[i]);
+    if (b && x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height) return i;
+  }
+  return null;
+}
+
+/** 엘리먼트를 dx, dy 만큼 이동 */
+function moveElementBy(el: DrawElement, dx: number, dy: number): DrawElement {
+  return { ...el, points: el.points.map((p, i) => (i % 2 === 0 ? p + dx : p + dy)) };
+}
+
+// ── 컴포넌트 ─────────────────────────────────────────────────────────────────
+
 export default function Board() {
-  // --- 상태 관리 ---
-  const [isJoined, setIsJoined] = useState<boolean>(false);
-  const [nickname, setNickname] = useState<string>('');
+  // ── 상태 ──
+  const [isJoined, setIsJoined] = useState(false);
+  const [nickname, setNickname] = useState('');
   const [elements, setElements] = useState<DrawElement[]>([]);
-  const [currentColor, setCurrentColor] = useState<string>(COLORS[0]);
+  const [currentColor, setCurrentColor] = useState(COLORS[0]);
   const [tool, setTool] = useState<ToolType>('pen');
-  const [strokeWidth, setStrokeWidth] = useState<number>(5);
+  const [strokeWidth, setStrokeWidth] = useState(5);
   const [users, setUsers] = useState<string[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [textInput, setTextInput] = useState<TextInputState | null>(null);
-  const [isFilled, setIsFilled] = useState<boolean>(false);
-  const [showGrid, setShowGrid] = useState<boolean>(true);
-  const [isChatOpen, setIsChatOpen] = useState<boolean>(true);
+  const [isFilled, setIsFilled] = useState(false);
+  const [showGrid, setShowGrid] = useState(true);
+  const [isChatOpen, setIsChatOpen] = useState(true);
   const [stageSize, setStageSize] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [cursors, setCursors] = useState<Record<string, CursorData>>({});
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const [isHoveringElement, setIsHoveringElement] = useState(false);
 
-  // --- Ref 설정 ---
+  // ── Refs ──
   const isDrawing = useRef(false);
   const stageRef = useRef<Konva.Stage>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const lastCursorEmit = useRef(0);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const historyRef = useRef<DrawElement[][]>([[]]); // 히스토리 스택 (초기값: 빈 캔버스)
+  const historyRef = useRef<DrawElement[][]>([[]]); // 히스토리 스택
   const historyStepRef = useRef(0);                 // 현재 히스토리 위치
+  const isDraggingSelected = useRef(false);
+  const dragStartPos = useRef<{ x: number; y: number } | null>(null);
+  const dragOriginalEl = useRef<DrawElement | null>(null);
+  // 최신 state를 useEffect 내부에서 안전하게 접근하기 위한 Refs
+  const elementsRef = useRef<DrawElement[]>([]);
+  const selectedIdxRef = useRef<number | null>(null);
+  elementsRef.current = elements;
+  selectedIdxRef.current = selectedIdx;
 
+  // ── 히스토리 저장 헬퍼 ──
+  const saveHistoryWith = (els: DrawElement[]) => {
+    const newHistory = historyRef.current.slice(0, historyStepRef.current + 1);
+    newHistory.push([...els]);
+    historyRef.current = newHistory;
+    historyStepRef.current = newHistory.length - 1;
+  };
 
-  // --- Undo / Redo ---
+  // ── Undo / Redo ──
   const handleUndo = () => {
     if (historyStepRef.current <= 0) return;
     historyStepRef.current--;
     const prev = historyRef.current[historyStepRef.current];
     setElements([...prev]);
+    setSelectedIdx(null);
     socket.emit('draw_line', prev);
   };
 
@@ -89,8 +171,109 @@ export default function Board() {
     historyStepRef.current++;
     const next = historyRef.current[historyStepRef.current];
     setElements([...next]);
+    setSelectedIdx(null);
     socket.emit('draw_line', next);
   };
+
+  // ── 선택 요소 삭제 ──
+  const deleteSelected = () => {
+    const idx = selectedIdxRef.current;
+    if (idx === null) return;
+    const updated = elementsRef.current.filter((_, i) => i !== idx);
+    setElements(updated);
+    setSelectedIdx(null);
+    saveHistoryWith(updated);
+    socket.emit('draw_line', updated);
+  };
+
+  // ── 레이어 관리 ──
+  const bringToFront = () => {
+    if (selectedIdx === null) return;
+    const updated = [...elements];
+    const [el] = updated.splice(selectedIdx, 1);
+    updated.push(el);
+    setElements(updated);
+    setSelectedIdx(updated.length - 1);
+    saveHistoryWith(updated);
+    socket.emit('draw_line', updated);
+  };
+
+  const sendToBack = () => {
+    if (selectedIdx === null) return;
+    const updated = [...elements];
+    const [el] = updated.splice(selectedIdx, 1);
+    updated.unshift(el);
+    setElements(updated);
+    setSelectedIdx(0);
+    saveHistoryWith(updated);
+    socket.emit('draw_line', updated);
+  };
+
+  const moveForward = () => {
+    if (selectedIdx === null || selectedIdx >= elements.length - 1) return;
+    const updated = [...elements];
+    [updated[selectedIdx], updated[selectedIdx + 1]] = [updated[selectedIdx + 1], updated[selectedIdx]];
+    setElements(updated);
+    setSelectedIdx(selectedIdx + 1);
+    saveHistoryWith(updated);
+    socket.emit('draw_line', updated);
+  };
+
+  const moveBackward = () => {
+    if (selectedIdx === null || selectedIdx <= 0) return;
+    const updated = [...elements];
+    [updated[selectedIdx], updated[selectedIdx - 1]] = [updated[selectedIdx - 1], updated[selectedIdx]];
+    setElements(updated);
+    setSelectedIdx(selectedIdx - 1);
+    saveHistoryWith(updated);
+    socket.emit('draw_line', updated);
+  };
+
+  // ── 내보내기 / 가져오기 ──
+  const handleDownloadPNG = () => {
+    if (!stageRef.current) return;
+    const dataUrl = stageRef.current.toDataURL({ pixelRatio: 2 });
+    const link = document.createElement('a');
+    link.download = `whiteboard-${Date.now()}.png`;
+    link.href = dataUrl;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleExportJSON = () => {
+    const blob = new Blob([JSON.stringify(elements, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = `whiteboard-${Date.now()}.json`;
+    link.href = url;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target?.result as string) as DrawElement[];
+        if (!Array.isArray(data)) throw new Error();
+        setElements(data);
+        setSelectedIdx(null);
+        saveHistoryWith(data);
+        socket.emit('draw_line', data);
+      } catch {
+        alert('유효하지 않은 JSON 파일입니다.');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // 같은 파일 재선택 허용
+  };
+
+  // ── Effects ──
 
   // 창 크기 반응형
   useEffect(() => {
@@ -99,9 +282,20 @@ export default function Board() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // 버그 수정: 드래그 중 캔버스 밖에서 마우스를 떼도 드로잉 종료
+  // 드래그 중 캔버스 밖에서 마우스를 떼도 종료
   useEffect(() => {
     const handleWindowMouseUp = () => {
+      if (isDraggingSelected.current) {
+        isDraggingSelected.current = false;
+        dragStartPos.current = null;
+        dragOriginalEl.current = null;
+        const current = elementsRef.current;
+        const newHistory = historyRef.current.slice(0, historyStepRef.current + 1);
+        newHistory.push([...current]);
+        historyRef.current = newHistory;
+        historyStepRef.current = newHistory.length - 1;
+        return;
+      }
       if (!isDrawing.current) return;
       isDrawing.current = false;
       setElements((latest) => {
@@ -116,28 +310,38 @@ export default function Board() {
     return () => window.removeEventListener('mouseup', handleWindowMouseUp);
   }, []);
 
-  // 키보드 단축키 (Ctrl+Z/Y + 툴 전환)
+  // 키보드 단축키
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // 텍스트 입력 중에는 단축키 무시
       const active = document.activeElement;
       if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
 
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        handleUndo();
-        return;
+        e.preventDefault(); handleUndo(); return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) {
+        e.preventDefault(); handleRedo(); return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIdxRef.current !== null) {
         e.preventDefault();
-        handleRedo();
+        const idx = selectedIdxRef.current;
+        const updated = elementsRef.current.filter((_, i) => i !== idx);
+        setElements(updated);
+        setSelectedIdx(null);
+        const newHistory = historyRef.current.slice(0, historyStepRef.current + 1);
+        newHistory.push([...updated]);
+        historyRef.current = newHistory;
+        historyStepRef.current = newHistory.length - 1;
+        socket.emit('draw_line', updated);
         return;
       }
-      // 툴 단축키 (Ctrl 없이)
+      if (e.key === 'Escape') {
+        setSelectedIdx(null); return;
+      }
       if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
         const toolMap: Record<string, ToolType> = {
           p: 'pen', e: 'eraser', r: 'rect', c: 'circle',
-          t: 'text', l: 'straight', a: 'arrow',
+          t: 'text', l: 'straight', a: 'arrow', s: 'select',
         };
         if (toolMap[e.key]) setTool(toolMap[e.key]);
       }
@@ -146,18 +350,17 @@ export default function Board() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // --- 소켓 이벤트 리스너 ---
+  // 소켓 이벤트 리스너
   useEffect(() => {
     socket.on('draw_line', (incoming: DrawElement[]) => setElements(incoming));
     socket.on('clear_all', () => {
       setElements([]);
+      setSelectedIdx(null);
       historyRef.current = [[]];
       historyStepRef.current = 0;
     });
     socket.on('user_list', (incomingUsers: string[]) => setUsers(incomingUsers));
-    socket.on('receive_message', (message: ChatMessage) => {
-      setMessages((prev) => [...prev, message]);
-    });
+    socket.on('receive_message', (message: ChatMessage) => setMessages((prev) => [...prev, message]));
     socket.on('cursor_move', (data: CursorData & { id: string }) => {
       setCursors((prev) => ({ ...prev, [data.id]: { x: data.x, y: data.y, nickname: data.nickname } }));
     });
@@ -170,16 +373,10 @@ export default function Board() {
     socket.on('stop_typing', (name: string) => {
       setTypingUsers((prev) => prev.filter((n) => n !== name));
     });
-
     return () => {
-      socket.off('draw_line');
-      socket.off('clear_all');
-      socket.off('user_list');
-      socket.off('receive_message');
-      socket.off('cursor_move');
-      socket.off('cursor_leave');
-      socket.off('typing');
-      socket.off('stop_typing');
+      socket.off('draw_line'); socket.off('clear_all'); socket.off('user_list');
+      socket.off('receive_message'); socket.off('cursor_move'); socket.off('cursor_leave');
+      socket.off('typing'); socket.off('stop_typing');
     };
   }, []);
 
@@ -188,7 +385,8 @@ export default function Board() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // --- 핸들러 함수 ---
+  // ── 핸들러 ──
+
   const handleJoin = () => {
     if (nickname.trim() === '') return;
     socket.emit('set_nickname', nickname);
@@ -197,13 +395,12 @@ export default function Board() {
 
   const handleSendMessage = () => {
     if (inputText.trim() === '') return;
-    const messageData: ChatMessage = {
+    const msg: ChatMessage = {
       text: inputText,
       sender: nickname,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
-    socket.emit('send_message', messageData);
-    // 버그 수정: 전송 즉시 타이핑 표시 제거
+    socket.emit('send_message', msg);
     socket.emit('stop_typing', nickname);
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     setInputText('');
@@ -211,28 +408,14 @@ export default function Board() {
 
   const handleClearAll = () => {
     setElements([]);
+    setSelectedIdx(null);
     historyRef.current = [[]];
     historyStepRef.current = 0;
     socket.emit('clear_all');
   };
 
-  const handleDownload = () => {
-    if (!stageRef.current) return;
-    const dataUrl = stageRef.current.toDataURL({ pixelRatio: 2 });
-    const link = document.createElement('a');
-    link.download = `whiteboard-${Date.now()}.png`;
-    link.href = dataUrl;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  // --- 텍스트 확정: 히스토리 저장 + 소켓 발행 ---
   const commitText = () => {
-    if (!textInput || !textInput.value.trim()) {
-      setTextInput(null);
-      return;
-    }
+    if (!textInput || !textInput.value.trim()) { setTextInput(null); return; }
     const fontSize = Math.max(12, strokeWidth * 3);
     const newEl: DrawElement = {
       tool: 'text',
@@ -244,34 +427,40 @@ export default function Board() {
     };
     setElements((prev) => {
       const updated = [...prev, newEl];
-      const newHistory = historyRef.current.slice(0, historyStepRef.current + 1);
-      newHistory.push([...updated]);
-      historyRef.current = newHistory;
-      historyStepRef.current = newHistory.length - 1;
+      saveHistoryWith(updated);
       socket.emit('draw_line', updated);
       return updated;
     });
     setTextInput(null);
   };
 
-  // --- 캔버스 마우스 이벤트 ---
+  // ── 캔버스 마우스 이벤트 ──
+
   const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
     const pos = e.target.getStage()?.getPointerPosition();
     if (!pos) return;
 
-    // 텍스트 도구: 클릭 위치에 입력창 표시 (기존 텍스트 먼저 확정)
     if (tool === 'text') {
       commitText();
       setTextInput({ x: pos.x, y: pos.y, value: '' });
       return;
     }
 
+    if (tool === 'select') {
+      const idx = getElementAtPoint(elements, pos.x, pos.y);
+      setSelectedIdx(idx);
+      if (idx !== null) {
+        isDraggingSelected.current = true;
+        dragStartPos.current = { x: pos.x, y: pos.y };
+        dragOriginalEl.current = { ...elements[idx], points: [...elements[idx].points] };
+      }
+      return;
+    }
+
     isDrawing.current = true;
     const newEl: DrawElement = {
       tool,
-      points: tool === 'pen' || tool === 'eraser'
-        ? [pos.x, pos.y]
-        : [pos.x, pos.y, pos.x, pos.y],
+      points: tool === 'pen' || tool === 'eraser' ? [pos.x, pos.y] : [pos.x, pos.y, pos.x, pos.y],
       color: currentColor,
       strokeWidth,
       filled: isFilled,
@@ -290,21 +479,35 @@ export default function Board() {
       lastCursorEmit.current = now;
     }
 
+    if (tool === 'select') {
+      if (isDraggingSelected.current && selectedIdx !== null && dragStartPos.current && dragOriginalEl.current) {
+        const dx = point.x - dragStartPos.current.x;
+        const dy = point.y - dragStartPos.current.y;
+        setElements((prev) => {
+          if (selectedIdx >= prev.length) return prev;
+          const updated = [...prev];
+          updated[selectedIdx] = moveElementBy(dragOriginalEl.current!, dx, dy);
+          socket.emit('draw_line', updated);
+          return updated;
+        });
+      } else {
+        // 호버 감지
+        setIsHoveringElement(getElementAtPoint(elements, point.x, point.y) !== null);
+      }
+      return;
+    }
+
     if (!isDrawing.current) return;
 
     setElements((prev) => {
-      if (prev.length === 0) return prev; // 버그 수정: 빈 배열 crash 방어
+      if (prev.length === 0) return prev;
       const updated = [...prev];
       const last = { ...updated[updated.length - 1] };
-
       if (last.tool === 'pen' || last.tool === 'eraser') {
-        // 펜/지우개: 점 추가
         last.points = [...last.points, point.x, point.y];
       } else {
-        // 도형: 끝점만 업데이트 (시작점 고정)
         last.points = [last.points[0], last.points[1], point.x, point.y];
       }
-
       updated[updated.length - 1] = last;
       socket.emit('draw_line', updated);
       return updated;
@@ -312,91 +515,63 @@ export default function Board() {
   };
 
   const handleMouseUp = () => {
+    if (tool === 'select') {
+      if (isDraggingSelected.current) {
+        isDraggingSelected.current = false;
+        dragStartPos.current = null;
+        dragOriginalEl.current = null;
+        setElements((latest) => { saveHistoryWith(latest); return latest; });
+      }
+      return;
+    }
     if (!isDrawing.current) return;
     isDrawing.current = false;
-    // setState 콜백으로 최신 elements 읽어 히스토리에 저장
-    setElements((latest) => {
-      const newHistory = historyRef.current.slice(0, historyStepRef.current + 1);
-      newHistory.push([...latest]);
-      historyRef.current = newHistory;
-      historyStepRef.current = newHistory.length - 1;
-      return latest;
-    });
+    setElements((latest) => { saveHistoryWith(latest); return latest; });
   };
 
-  // --- 엘리먼트 렌더링 ---
+  // ── 엘리먼트 렌더링 ──
   const renderElement = (el: DrawElement, i: number) => {
     if (el.tool === 'pen' || el.tool === 'eraser') {
       return (
-        <Line
-          key={i}
-          points={el.points}
-          stroke={el.color}
-          strokeWidth={el.strokeWidth}
-          tension={0.5}
-          lineCap="round"
-          lineJoin="round"
-          globalCompositeOperation={el.tool === 'eraser' ? 'destination-out' : 'source-over'}
-        />
+        <Line key={i} points={el.points} stroke={el.color} strokeWidth={el.strokeWidth}
+          tension={0.5} lineCap="round" lineJoin="round"
+          globalCompositeOperation={el.tool === 'eraser' ? 'destination-out' : 'source-over'} />
       );
     }
     if (el.tool === 'rect' && el.points.length >= 4) {
       const x = Math.min(el.points[0], el.points[2]);
       const y = Math.min(el.points[1], el.points[3]);
-      const width = Math.abs(el.points[2] - el.points[0]);
-      const height = Math.abs(el.points[3] - el.points[1]);
       return (
-        <Rect key={i} x={x} y={y} width={width} height={height}
-          stroke={el.color} strokeWidth={el.strokeWidth}
-          fill={el.filled ? el.color : undefined} />
+        <Rect key={i} x={x} y={y}
+          width={Math.abs(el.points[2] - el.points[0])} height={Math.abs(el.points[3] - el.points[1])}
+          stroke={el.color} strokeWidth={el.strokeWidth} fill={el.filled ? el.color : undefined} />
       );
     }
     if (el.tool === 'circle' && el.points.length >= 4) {
-      const cx = (el.points[0] + el.points[2]) / 2;
-      const cy = (el.points[1] + el.points[3]) / 2;
-      const rx = Math.abs(el.points[2] - el.points[0]) / 2;
-      const ry = Math.abs(el.points[3] - el.points[1]) / 2;
       return (
-        <Ellipse key={i} x={cx} y={cy} radiusX={rx} radiusY={ry}
-          stroke={el.color} strokeWidth={el.strokeWidth}
-          fill={el.filled ? el.color : undefined} />
+        <Ellipse key={i}
+          x={(el.points[0] + el.points[2]) / 2} y={(el.points[1] + el.points[3]) / 2}
+          radiusX={Math.abs(el.points[2] - el.points[0]) / 2} radiusY={Math.abs(el.points[3] - el.points[1]) / 2}
+          stroke={el.color} strokeWidth={el.strokeWidth} fill={el.filled ? el.color : undefined} />
       );
     }
     if (el.tool === 'text' && el.text) {
       return (
-        <Text
-          key={i}
-          x={el.points[0]}
-          y={el.points[1]}
-          text={el.text}
-          fontSize={el.fontSize || 20}
-          fill={el.color}
-          fontFamily="sans-serif"
-        />
+        <Text key={i} x={el.points[0]} y={el.points[1]} text={el.text}
+          fontSize={el.fontSize || 20} fill={el.color} fontFamily="sans-serif" />
       );
     }
     if (el.tool === 'straight' && el.points.length >= 4) {
       return (
-        <Line
-          key={i}
-          points={[el.points[0], el.points[1], el.points[2], el.points[3]]}
-          stroke={el.color}
-          strokeWidth={el.strokeWidth}
-          lineCap="round"
-        />
+        <Line key={i} points={[el.points[0], el.points[1], el.points[2], el.points[3]]}
+          stroke={el.color} strokeWidth={el.strokeWidth} lineCap="round" />
       );
     }
     if (el.tool === 'arrow' && el.points.length >= 4) {
       return (
-        <Arrow
-          key={i}
-          points={[el.points[0], el.points[1], el.points[2], el.points[3]]}
-          stroke={el.color}
-          strokeWidth={el.strokeWidth}
-          fill={el.color}
-          pointerLength={12}
-          pointerWidth={10}
-        />
+        <Arrow key={i} points={[el.points[0], el.points[1], el.points[2], el.points[3]]}
+          stroke={el.color} strokeWidth={el.strokeWidth} fill={el.color}
+          pointerLength={12} pointerWidth={10} />
       );
     }
     return null;
@@ -406,10 +581,35 @@ export default function Board() {
   const getCursor = () => {
     if (tool === 'eraser') return 'cell';
     if (tool === 'text') return 'text';
+    if (tool === 'select') {
+      if (isDraggingSelected.current) return 'grabbing';
+      return isHoveringElement ? 'grab' : 'default';
+    }
     return 'crosshair';
   };
 
-  // --- 렌더링: 입장 화면 ---
+  // 선택된 요소의 바운딩 박스
+  const selectionBounds = selectedIdx !== null && selectedIdx < elements.length
+    ? getElementBounds(elements[selectedIdx])
+    : null;
+
+  // 공통 버튼 스타일
+  const toolBtn = (active: boolean): React.CSSProperties => ({
+    background: 'none', border: 'none', cursor: 'pointer',
+    color: active ? '#3b82f6' : '#9ca3af', display: 'flex', alignItems: 'center',
+  });
+  const iconBtn: React.CSSProperties = {
+    background: 'none', border: 'none', cursor: 'pointer',
+    color: '#6b7280', display: 'flex', alignItems: 'center',
+  };
+  const layerBtn = (disabled = false): React.CSSProperties => ({
+    background: 'none', border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
+    color: disabled ? '#d1d5db' : '#6b7280',
+    display: 'flex', alignItems: 'center', padding: '4px',
+    borderRadius: '4px',
+  });
+
+  // ── 렌더링: 입장 화면 ──
   if (!isJoined) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#f3f4f6' }}>
@@ -429,7 +629,7 @@ export default function Board() {
     );
   }
 
-  // --- 렌더링: 메인 화이트보드 ---
+  // ── 렌더링: 메인 화이트보드 ──
   return (
     <div style={{
       position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden',
@@ -438,21 +638,22 @@ export default function Board() {
       backgroundSize: showGrid ? '28px 28px' : 'auto',
     }}>
 
-      {/* 상단 도구 모음 */}
+      {/* ── 상단 도구 모음 ── */}
       <div style={{ position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)', zIndex: 10, display: 'flex', gap: '15px', padding: '10px 20px', backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', alignItems: 'center' }}>
 
         {/* 그리기 도구 */}
         <div style={{ display: 'flex', gap: '10px', borderRight: '2px solid #e5e7eb', paddingRight: '15px' }}>
-          <button onClick={() => setTool('pen')} title="펜 (P)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'pen' ? '#3b82f6' : '#9ca3af' }}><Pen size={24} /></button>
-          <button onClick={() => setTool('eraser')} title="지우개 (E)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'eraser' ? '#3b82f6' : '#9ca3af' }}><Eraser size={24} /></button>
-          <button onClick={() => setTool('rect')} title="사각형 (R)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'rect' ? '#3b82f6' : '#9ca3af' }}><Square size={24} /></button>
-          <button onClick={() => setTool('circle')} title="원 (C)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'circle' ? '#3b82f6' : '#9ca3af' }}><Circle size={24} /></button>
-          <button onClick={() => setTool('text')} title="텍스트 (T)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'text' ? '#3b82f6' : '#9ca3af' }}><Type size={24} /></button>
-          <button onClick={() => setTool('straight')} title="직선 (L)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'straight' ? '#3b82f6' : '#9ca3af' }}><Minus size={24} /></button>
-          <button onClick={() => setTool('arrow')} title="화살표 (A)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'arrow' ? '#3b82f6' : '#9ca3af' }}><ArrowRight size={24} /></button>
+          <button onClick={() => setTool('select')} title="선택/이동 (S)" style={toolBtn(tool === 'select')}><MousePointer size={24} /></button>
+          <button onClick={() => setTool('pen')} title="펜 (P)" style={toolBtn(tool === 'pen')}><Pen size={24} /></button>
+          <button onClick={() => setTool('eraser')} title="지우개 (E)" style={toolBtn(tool === 'eraser')}><Eraser size={24} /></button>
+          <button onClick={() => setTool('rect')} title="사각형 (R)" style={toolBtn(tool === 'rect')}><Square size={24} /></button>
+          <button onClick={() => setTool('circle')} title="원 (C)" style={toolBtn(tool === 'circle')}><Circle size={24} /></button>
+          <button onClick={() => setTool('text')} title="텍스트 (T)" style={toolBtn(tool === 'text')}><Type size={24} /></button>
+          <button onClick={() => setTool('straight')} title="직선 (L)" style={toolBtn(tool === 'straight')}><Minus size={24} /></button>
+          <button onClick={() => setTool('arrow')} title="화살표 (A)" style={toolBtn(tool === 'arrow')}><ArrowRight size={24} /></button>
         </div>
 
-        {/* 채우기 토글 (도형 도구일 때만 활성화) */}
+        {/* 채우기 토글 */}
         <div style={{ borderRight: '2px solid #e5e7eb', paddingRight: '15px' }}>
           <button
             onClick={() => setIsFilled((v) => !v)}
@@ -463,17 +664,15 @@ export default function Board() {
           </button>
         </div>
 
-        {/* 색상 팔레트 + 커스텀 색상 피커 */}
+        {/* 색상 팔레트 + 커스텀 색상 */}
         <div style={{ display: 'flex', gap: '10px', borderRight: '2px solid #e5e7eb', paddingRight: '15px', alignItems: 'center' }}>
           {COLORS.map((color) => (
             <button key={color} onClick={() => { setCurrentColor(color); if (tool === 'eraser') setTool('pen'); }}
               style={{ width: '24px', height: '24px', borderRadius: '50%', backgroundColor: color, border: currentColor === color && tool !== 'eraser' ? '3px solid #3b82f6' : '1px solid #e5e7eb', cursor: 'pointer' }} />
           ))}
-          {/* 커스텀 색상 피커 */}
           <label title="커스텀 색상" style={{ position: 'relative', width: '24px', height: '24px', cursor: 'pointer' }}>
             <input
-              type="color"
-              value={currentColor}
+              type="color" value={currentColor}
               onChange={(e) => { setCurrentColor(e.target.value); if (tool === 'eraser') setTool('pen'); }}
               style={{ position: 'absolute', opacity: 0, width: '100%', height: '100%', cursor: 'pointer', top: 0, left: 0 }}
             />
@@ -494,17 +693,20 @@ export default function Board() {
           )}
         </div>
 
-        {/* Undo / Redo / 그리드 / 저장 / 전체지우기 */}
+        {/* Undo / Redo / 그리드 / PNG / JSON / 가져오기 / 전체지우기 */}
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-          <button onClick={handleUndo} title="실행 취소 (Ctrl+Z)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><Undo2 size={24} /></button>
-          <button onClick={handleRedo} title="다시 실행 (Ctrl+Y)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><Redo2 size={24} /></button>
-          <button onClick={() => setShowGrid(v => !v)} title="그리드 배경 토글" style={{ background: 'none', border: 'none', cursor: 'pointer', color: showGrid ? '#3b82f6' : '#9ca3af' }}><Grid2X2 size={24} /></button>
-          <button onClick={handleDownload} title="저장" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><Download size={24} /></button>
-          <button onClick={handleClearAll} title="전체 지우기" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}><Trash2 size={24} /></button>
+          <button onClick={handleUndo} title="실행 취소 (Ctrl+Z)" style={iconBtn}><Undo2 size={24} /></button>
+          <button onClick={handleRedo} title="다시 실행 (Ctrl+Y)" style={iconBtn}><Redo2 size={24} /></button>
+          <button onClick={() => setShowGrid((v) => !v)} title="그리드 배경 토글" style={{ ...iconBtn, color: showGrid ? '#3b82f6' : '#9ca3af' }}><Grid2X2 size={24} /></button>
+          <button onClick={handleDownloadPNG} title="PNG로 저장" style={iconBtn}><Download size={24} /></button>
+          <button onClick={handleExportJSON} title="JSON으로 내보내기" style={iconBtn}><FileJson size={24} /></button>
+          <button onClick={() => importInputRef.current?.click()} title="JSON 가져오기" style={iconBtn}><Upload size={24} /></button>
+          <input ref={importInputRef} type="file" accept=".json" onChange={handleImportJSON} style={{ display: 'none' }} />
+          <button onClick={handleClearAll} title="전체 지우기" style={{ ...iconBtn, color: '#ef4444' }}><Trash2 size={24} /></button>
         </div>
       </div>
 
-      {/* 우측 접속자 목록 */}
+      {/* ── 우측 접속자 목록 ── */}
       <div style={{ position: 'absolute', top: '20px', right: '20px', zIndex: 10, backgroundColor: 'white', padding: '15px', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', width: '150px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', fontSize: '14px', fontWeight: 'bold', color: '#374151' }}>
           <Users size={18} /> 온라인 ({users.length})
@@ -518,9 +720,9 @@ export default function Board() {
         </div>
       </div>
 
-      {/* 우측 하단 채팅창 */}
+      {/* ── 우측 하단 채팅창 ── */}
       <div style={{ position: 'absolute', bottom: '20px', right: '20px', zIndex: 10, width: '280px', backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 4px 15px rgba(0,0,0,0.1)', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '12px', borderBottom: isChatOpen ? '1px solid #e5e7eb' : 'none', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }} onClick={() => setIsChatOpen(v => !v)}>
+        <div style={{ padding: '12px', borderBottom: isChatOpen ? '1px solid #e5e7eb' : 'none', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }} onClick={() => setIsChatOpen((v) => !v)}>
           <MessageSquare size={18} />
           <span style={{ flex: 1 }}>채팅 {messages.length > 0 && !isChatOpen && <span style={{ fontSize: '11px', backgroundColor: '#3b82f6', color: 'white', borderRadius: '10px', padding: '1px 6px' }}>{messages.length}</span>}</span>
           <ChevronDown size={16} style={{ color: '#9ca3af', transform: isChatOpen ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.2s' }} />
@@ -554,7 +756,49 @@ export default function Board() {
         )}
       </div>
 
-      {/* 다른 사용자 커서 오버레이 */}
+      {/* ── 레이어 관리 패널 (요소 선택 시) ── */}
+      {selectedIdx !== null && (
+        <div style={{ position: 'absolute', bottom: '20px', left: '20px', zIndex: 10, display: 'flex', gap: '4px', padding: '8px 14px', backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', alignItems: 'center' }}>
+          <span style={{ fontSize: '11px', color: '#9ca3af', marginRight: '6px', userSelect: 'none' }}>레이어</span>
+          <button onClick={sendToBack} title="맨 뒤로 보내기" style={layerBtn(selectedIdx === 0)}>
+            <ChevronsDown size={18} />
+          </button>
+          <button onClick={moveBackward} title="뒤로 보내기" style={layerBtn(selectedIdx <= 0)}>
+            <ChevronDown size={18} />
+          </button>
+          <button onClick={moveForward} title="앞으로 가져오기" style={layerBtn(selectedIdx >= elements.length - 1)}>
+            <ChevronUp size={18} />
+          </button>
+          <button onClick={bringToFront} title="맨 앞으로 가져오기" style={layerBtn(selectedIdx === elements.length - 1)}>
+            <ChevronsUp size={18} />
+          </button>
+          <div style={{ width: '1px', height: '20px', backgroundColor: '#e5e7eb', margin: '0 6px' }} />
+          <button onClick={deleteSelected} title="삭제 (Del)" style={{ ...layerBtn(), color: '#ef4444' }}>
+            <Trash2 size={18} />
+          </button>
+          <span style={{ fontSize: '10px', color: '#d1d5db', marginLeft: '6px', userSelect: 'none' }}>
+            {selectedIdx + 1}/{elements.length}
+          </span>
+        </div>
+      )}
+
+      {/* ── 선택된 요소 바운딩 박스 오버레이 ── */}
+      {selectionBounds && (
+        <div style={{
+          position: 'absolute',
+          left: selectionBounds.x - 4,
+          top: selectionBounds.y - 4,
+          width: selectionBounds.width + 8,
+          height: selectionBounds.height + 8,
+          border: '2px dashed #3b82f6',
+          borderRadius: '4px',
+          pointerEvents: 'none',
+          zIndex: 12,
+          boxSizing: 'border-box',
+        }} />
+      )}
+
+      {/* ── 다른 사용자 커서 오버레이 ── */}
       {Object.entries(cursors).map(([id, cursor]) => (
         <div key={id} style={{ position: 'absolute', left: cursor.x, top: cursor.y, zIndex: 15, pointerEvents: 'none', transform: 'translate(-4px, -4px)' }}>
           <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: getCursorColor(id), border: '2px solid white', boxShadow: '0 0 4px rgba(0,0,0,0.3)' }} />
@@ -564,7 +808,7 @@ export default function Board() {
         </div>
       ))}
 
-      {/* 텍스트 입력 오버레이 */}
+      {/* ── 텍스트 입력 오버레이 ── */}
       {textInput && (
         <textarea
           ref={textareaRef}
@@ -572,39 +816,24 @@ export default function Board() {
           autoFocus
           onChange={(e) => setTextInput({ ...textInput, value: e.target.value })}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              commitText();
-            }
-            if (e.key === 'Escape') {
-              setTextInput(null);
-            }
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitText(); }
+            if (e.key === 'Escape') setTextInput(null);
           }}
           placeholder="텍스트 입력 후 Enter"
           style={{
-            position: 'absolute',
-            left: textInput.x,
-            top: textInput.y,
-            zIndex: 20,
-            background: 'transparent',
-            border: '1px dashed #3b82f6',
-            outline: 'none',
-            resize: 'none',
-            overflow: 'hidden',
-            minWidth: '120px',
+            position: 'absolute', left: textInput.x, top: textInput.y, zIndex: 20,
+            background: 'transparent', border: '1px dashed #3b82f6', outline: 'none',
+            resize: 'none', overflow: 'hidden', minWidth: '120px',
             minHeight: `${Math.max(12, strokeWidth * 3) + 10}px`,
             fontSize: `${Math.max(12, strokeWidth * 3)}px`,
-            fontFamily: 'sans-serif',
-            color: currentColor,
-            lineHeight: '1.4',
-            padding: '2px 4px',
-            caretColor: currentColor,
+            fontFamily: 'sans-serif', color: currentColor, lineHeight: '1.4',
+            padding: '2px 4px', caretColor: currentColor,
           }}
           rows={1}
         />
       )}
 
-      {/* 캔버스 영역 */}
+      {/* ── 캔버스 영역 ── */}
       <Stage
         ref={stageRef}
         width={stageSize.width}
