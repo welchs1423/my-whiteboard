@@ -6,6 +6,8 @@ import {
   Undo2, Redo2, Type, ArrowRight, Minus, PaintBucket, Grid2X2, ChevronDown,
   MousePointer, ChevronsUp, ChevronUp, ChevronsDown, FileJson, Upload,
   HelpCircle, ImageIcon, StickyNote, ZoomIn, ZoomOut, Copy,
+  AlignLeft, AlignCenter, AlignRight, AlignStartVertical, AlignCenterVertical, AlignEndVertical,
+  Lock, Unlock, Magnet,
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { DrawElement, ToolType, DashStyle, Bounds } from '../utils/elementHelpers';
@@ -42,6 +44,8 @@ const SHORTCUTS = [
   ['L', '직선'],
   ['A', '화살표'],
   ['N', '스티커 메모'],
+  ['Ctrl+A', '전체 선택'],
+  ['Ctrl+D', '선택 복제 (+20px)'],
   ['Ctrl+Z', '실행 취소'],
   ['Ctrl+Y', '다시 실행'],
   ['Ctrl+C', '선택 복사'],
@@ -87,6 +91,7 @@ export default function Board() {
   const [currentOpacity, setCurrentOpacity] = useState(1.0);
   const [stickyBg, setStickyBg] = useState('#fef08a');
   // UI
+  const [isSnapEnabled, setIsSnapEnabled] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [, setImageLoadTick] = useState(0); // 이미지 로딩 후 강제 리렌더
@@ -118,6 +123,7 @@ export default function Board() {
   const stageScaleRef = useRef(1);
   const showHelpRef = useRef(false);
   const spaceHeldRef = useRef(false);
+  const isSnapEnabledRef = useRef(false);
 
   // Ref 동기화
   elementsRef.current = elements;
@@ -126,6 +132,7 @@ export default function Board() {
   stageScaleRef.current = stageScale;
   showHelpRef.current = showHelp;
   spaceHeldRef.current = isSpaceHeld;
+  isSnapEnabledRef.current = isSnapEnabled;
 
   // ── 좌표 변환 ──
 
@@ -177,7 +184,7 @@ export default function Board() {
   const deleteSelected = () => {
     const idxSet = selectedIndicesRef.current;
     if (idxSet.size === 0) return;
-    const updated = elementsRef.current.filter((_, i) => !idxSet.has(i));
+    const updated = elementsRef.current.filter((el, i) => !idxSet.has(i) || el.locked);
     setElements(updated);
     setSelectedIndices(new Set());
     saveHistoryWith(updated);
@@ -224,6 +231,56 @@ export default function Board() {
     [upd[singleIdx], upd[singleIdx - 1]] = [upd[singleIdx - 1], upd[singleIdx]];
     setElements(upd); setSelectedIndices(new Set([singleIdx - 1]));
     saveHistoryWith(upd); socket.emit('draw_line', upd);
+  };
+
+  // ── 정렬 ──
+
+  const alignElements = (dir: 'left' | 'centerH' | 'right' | 'top' | 'middleV' | 'bottom') => {
+    const idxs = [...selectedIndicesRef.current];
+    if (idxs.length < 2) return;
+    const pairs = idxs.map(i => ({ idx: i, b: getElementBounds(elementsRef.current[i]) })).filter(p => p.b !== null) as { idx: number; b: NonNullable<ReturnType<typeof getElementBounds>> }[];
+    if (pairs.length < 2) return;
+    const upd = [...elementsRef.current];
+    let target: number;
+    switch (dir) {
+      case 'left':
+        target = Math.min(...pairs.map(p => p.b.x));
+        pairs.forEach(({ idx, b }) => { upd[idx] = moveElementBy(upd[idx], target - b.x, 0); });
+        break;
+      case 'centerH':
+        target = (Math.min(...pairs.map(p => p.b.x)) + Math.max(...pairs.map(p => p.b.x + p.b.width))) / 2;
+        pairs.forEach(({ idx, b }) => { upd[idx] = moveElementBy(upd[idx], target - (b.x + b.width / 2), 0); });
+        break;
+      case 'right':
+        target = Math.max(...pairs.map(p => p.b.x + p.b.width));
+        pairs.forEach(({ idx, b }) => { upd[idx] = moveElementBy(upd[idx], target - (b.x + b.width), 0); });
+        break;
+      case 'top':
+        target = Math.min(...pairs.map(p => p.b.y));
+        pairs.forEach(({ idx, b }) => { upd[idx] = moveElementBy(upd[idx], 0, target - b.y); });
+        break;
+      case 'middleV':
+        target = (Math.min(...pairs.map(p => p.b.y)) + Math.max(...pairs.map(p => p.b.y + p.b.height))) / 2;
+        pairs.forEach(({ idx, b }) => { upd[idx] = moveElementBy(upd[idx], 0, target - (b.y + b.height / 2)); });
+        break;
+      case 'bottom':
+        target = Math.max(...pairs.map(p => p.b.y + p.b.height));
+        pairs.forEach(({ idx, b }) => { upd[idx] = moveElementBy(upd[idx], 0, target - (b.y + b.height)); });
+        break;
+    }
+    setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
+  };
+
+  // ── 잠금/해제 ──
+
+  const toggleLock = () => {
+    const idxs = [...selectedIndicesRef.current];
+    if (idxs.length === 0) return;
+    const allLocked = idxs.every(i => elementsRef.current[i]?.locked);
+    const upd = elementsRef.current.map((el, i) =>
+      selectedIndicesRef.current.has(i) ? { ...el, locked: !allLocked } : el
+    );
+    setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
   };
 
   // ── 내보내기 / 가져오기 ──
@@ -298,6 +355,9 @@ export default function Board() {
     x: (sx - stagePosRef.current.x) / stageScaleRef.current,
     y: (sy - stagePosRef.current.y) / stageScaleRef.current,
   });
+
+  /** 그리드 스냅 (28px 격자) */
+  const snap = (v: number) => isSnapEnabledRef.current ? Math.round(v / 28) * 28 : v;
 
   // ── Effects ──
 
@@ -388,6 +448,27 @@ export default function Board() {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); handleUndo(); return; }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); handleRedo(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); setStageScale(1); setStagePos({ x: 0, y: 0 }); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+        e.preventDefault();
+        setSelectedIndices(new Set(elementsRef.current.map((_, i) => i)));
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'd') {
+        e.preventDefault();
+        const idxs = [...selectedIndicesRef.current];
+        if (idxs.length === 0) return;
+        const newEls: DrawElement[] = idxs.map(i => ({
+          ...elementsRef.current[i],
+          id: generateId(),
+          points: elementsRef.current[i].points.map(p => p + 20),
+          locked: false,
+        }));
+        const updated = [...elementsRef.current, ...newEls];
+        const newIdxs = new Set(Array.from({ length: newEls.length }, (_, k) => elementsRef.current.length + k));
+        setElements(updated); setSelectedIndices(newIdxs);
+        saveHistoryWith(updated); socket.emit('draw_line', updated);
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
         e.preventDefault();
         if (selectedIndicesRef.current.size === 1) {
@@ -560,7 +641,7 @@ export default function Board() {
     // 텍스트 도구
     if (tool === 'text') {
       commitText();
-      setTextInput({ x: pos.x, y: pos.y, value: '' });
+      setTextInput({ x: snap(pos.x), y: snap(pos.y), value: '' });
       return;
     }
 
@@ -588,7 +669,7 @@ export default function Board() {
           isDraggingSelected.current = true;
           dragStartPos.current = pos;
           const sel = selectedIndices.has(idx) ? selectedIndices : new Set([idx]);
-          dragOriginals.current = [...sel].map((i) => ({
+          dragOriginals.current = [...sel].filter(i => !elements[i]?.locked).map((i) => ({
             idx: i,
             el: { ...elements[i], points: [...elements[i].points] },
           }));
@@ -601,7 +682,7 @@ export default function Board() {
     isDrawing.current = true;
     const newEl: DrawElement = {
       id: generateId(), tool,
-      points: ['pen', 'eraser'].includes(tool) ? [pos.x, pos.y] : [pos.x, pos.y, pos.x, pos.y],
+      points: ['pen', 'eraser'].includes(tool) ? [snap(pos.x), snap(pos.y)] : [snap(pos.x), snap(pos.y), snap(pos.x), snap(pos.y)],
       color: currentColor, strokeWidth,
       filled: isFilled, dash: currentDash, opacity: currentOpacity,
       ...(tool === 'sticky' ? { stickyBg } : {}),
@@ -633,8 +714,8 @@ export default function Board() {
     // 선택 드래그
     if (tool === 'select') {
       if (isDraggingSelected.current && dragStartPos.current && dragOriginals.current.length) {
-        const dx = point.x - dragStartPos.current.x;
-        const dy = point.y - dragStartPos.current.y;
+        const dx = snap(point.x) - snap(dragStartPos.current.x);
+        const dy = snap(point.y) - snap(dragStartPos.current.y);
         setElements((prev) => {
           const upd = [...prev];
           dragOriginals.current.forEach(({ idx, el }) => {
@@ -664,9 +745,9 @@ export default function Board() {
       const upd = [...prev];
       const last = { ...upd[upd.length - 1] };
       if (last.tool === 'pen' || last.tool === 'eraser') {
-        last.points = [...last.points, point.x, point.y];
+        last.points = [...last.points, snap(point.x), snap(point.y)];
       } else {
-        last.points = [last.points[0], last.points[1], point.x, point.y];
+        last.points = [last.points[0], last.points[1], snap(point.x), snap(point.y)];
       }
       upd[upd.length - 1] = last;
       socket.emit('draw_line', upd);
@@ -959,6 +1040,7 @@ export default function Board() {
             <button onClick={handleUndo} title="실행 취소 (Ctrl+Z)" style={iconBtn}><Undo2 size={22}/></button>
             <button onClick={handleRedo} title="다시 실행 (Ctrl+Y)" style={iconBtn}><Redo2 size={22}/></button>
             <button onClick={() => setShowGrid(v => !v)} title="그리드 토글" style={{ ...iconBtn, color: showGrid?'#3b82f6':'#9ca3af' }}><Grid2X2 size={22}/></button>
+            <button onClick={() => setIsSnapEnabled(v => !v)} title="그리드 스냅 ON/OFF" style={{ ...iconBtn, color: isSnapEnabled?'#3b82f6':'#9ca3af' }}><Magnet size={22}/></button>
             <button onClick={handleDownloadPNG} title="PNG 저장" style={iconBtn}><Download size={22}/></button>
             <button onClick={handleExportJSON} title="JSON 내보내기" style={iconBtn}><FileJson size={22}/></button>
             <button onClick={() => importInputRef.current?.click()} title="JSON 가져오기" style={iconBtn}><Upload size={22}/></button>
@@ -995,9 +1077,28 @@ export default function Board() {
               <span style={{ width:'1px', height:'20px', backgroundColor:'#e5e7eb', margin:'0 4px' }} />
             </>
           )}
+          {selectedIndices.size >= 2 && (
+            <>
+              <span style={{ fontSize:'11px', color:'#9ca3af', marginRight:'4px' }}>정렬</span>
+              <button onClick={() => alignElements('left')} title="왼쪽 정렬" style={layerBtn()}><AlignLeft size={18}/></button>
+              <button onClick={() => alignElements('centerH')} title="가운데(수평) 정렬" style={layerBtn()}><AlignCenter size={18}/></button>
+              <button onClick={() => alignElements('right')} title="오른쪽 정렬" style={layerBtn()}><AlignRight size={18}/></button>
+              <button onClick={() => alignElements('top')} title="위 정렬" style={layerBtn()}><AlignStartVertical size={18}/></button>
+              <button onClick={() => alignElements('middleV')} title="중간(수직) 정렬" style={layerBtn()}><AlignCenterVertical size={18}/></button>
+              <button onClick={() => alignElements('bottom')} title="아래 정렬" style={layerBtn()}><AlignEndVertical size={18}/></button>
+              <span style={{ width:'1px', height:'20px', backgroundColor:'#e5e7eb', margin:'0 4px' }} />
+            </>
+          )}
           <span style={{ fontSize:'11px', color:'#9ca3af', marginRight:'4px' }}>
             {selectedIndices.size}개 선택
           </span>
+          <button
+            onClick={toggleLock}
+            title={[...selectedIndices].every(i => elements[i]?.locked) ? '잠금 해제' : '잠금'}
+            style={{ ...layerBtn(), color: [...selectedIndices].every(i => elements[i]?.locked) ? '#f59e0b' : '#6b7280' }}
+          >
+            {[...selectedIndices].every(i => elements[i]?.locked) ? <Unlock size={18}/> : <Lock size={18}/>}
+          </button>
           <button onClick={deleteSelected} title="삭제 (Del)" style={{ ...layerBtn(), color:'#ef4444' }}><Trash2 size={18}/></button>
         </div>
       )}

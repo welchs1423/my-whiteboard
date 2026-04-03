@@ -19,6 +19,7 @@ export interface DrawElement {
   opacity?: number;
   stickyBg?: string;
   imageDataUrl?: string;
+  locked?: boolean;
 }
 
 export interface Bounds {
