@@ -1,19 +1,27 @@
 import { useState, useRef, useEffect } from 'react';
-import { Stage, Layer, Line, Rect, Ellipse } from 'react-konva';
+import { Stage, Layer, Line, Rect, Ellipse, Text } from 'react-konva';
 import Konva from 'konva';
-import { Eraser, Pen, Trash2, Download, Users, MessageSquare, Send, Square, Circle, Undo2, Redo2 } from 'lucide-react';
+import { Eraser, Pen, Trash2, Download, Users, MessageSquare, Send, Square, Circle, Undo2, Redo2, Type } from 'lucide-react';
 import { io } from 'socket.io-client';
 
 // 서버 연결 설정
 const socket = io('http://localhost:3001');
 
-type ToolType = 'pen' | 'eraser' | 'rect' | 'circle';
+type ToolType = 'pen' | 'eraser' | 'rect' | 'circle' | 'text';
 
 interface DrawElement {
   tool: ToolType;
   points: number[];
   color: string;
   strokeWidth: number;
+  text?: string;    // 텍스트 도구 전용
+  fontSize?: number; // 텍스트 도구 전용
+}
+
+interface TextInputState {
+  x: number;
+  y: number;
+  value: string;
 }
 
 interface ChatMessage {
@@ -35,13 +43,22 @@ export default function Board() {
   const [users, setUsers] = useState<string[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
+  const [textInput, setTextInput] = useState<TextInputState | null>(null);
 
   // --- Ref 설정 ---
   const isDrawing = useRef(false);
   const stageRef = useRef<Konva.Stage>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<DrawElement[][]>([[]]); // 히스토리 스택 (초기값: 빈 캔버스)
   const historyStepRef = useRef(0);                 // 현재 히스토리 위치
+
+  // 텍스트 입력창이 열릴 때 자동 포커스
+  useEffect(() => {
+    if (textInput) {
+      textareaRef.current?.focus();
+    }
+  }, [textInput]);
 
   // --- Undo / Redo ---
   const handleUndo = () => {
@@ -63,6 +80,8 @@ export default function Board() {
   // 키보드 단축키 (Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // 텍스트 입력 중에는 단축키 무시
+      if (textareaRef.current === document.activeElement) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
         e.preventDefault();
         handleUndo();
@@ -138,10 +157,45 @@ export default function Board() {
     document.body.removeChild(link);
   };
 
+  // --- 텍스트 확정: 히스토리 저장 + 소켓 발행 ---
+  const commitText = () => {
+    if (!textInput || !textInput.value.trim()) {
+      setTextInput(null);
+      return;
+    }
+    const fontSize = Math.max(12, strokeWidth * 3);
+    const newEl: DrawElement = {
+      tool: 'text',
+      points: [textInput.x, textInput.y],
+      color: currentColor,
+      strokeWidth,
+      text: textInput.value,
+      fontSize,
+    };
+    setElements((prev) => {
+      const updated = [...prev, newEl];
+      const newHistory = historyRef.current.slice(0, historyStepRef.current + 1);
+      newHistory.push([...updated]);
+      historyRef.current = newHistory;
+      historyStepRef.current = newHistory.length - 1;
+      socket.emit('draw_line', updated);
+      return updated;
+    });
+    setTextInput(null);
+  };
+
+  // --- 캔버스 마우스 이벤트 ---
   const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    isDrawing.current = true;
     const pos = e.target.getStage()?.getPointerPosition();
     if (!pos) return;
+
+    // 텍스트 도구: 드래그 없이 클릭 위치에 입력창 표시
+    if (tool === 'text') {
+      setTextInput({ x: pos.x, y: pos.y, value: '' });
+      return;
+    }
+
+    isDrawing.current = true;
     const newEl: DrawElement = {
       tool,
       // 펜/지우개: 시작점만, 도형: 시작점+끝점(동일) 4개 값
@@ -226,7 +280,27 @@ export default function Board() {
           stroke={el.color} strokeWidth={el.strokeWidth} />
       );
     }
+    if (el.tool === 'text' && el.text) {
+      return (
+        <Text
+          key={i}
+          x={el.points[0]}
+          y={el.points[1]}
+          text={el.text}
+          fontSize={el.fontSize || 20}
+          fill={el.color}
+          fontFamily="sans-serif"
+        />
+      );
+    }
     return null;
+  };
+
+  // 커서 스타일
+  const getCursor = () => {
+    if (tool === 'eraser') return 'cell';
+    if (tool === 'text') return 'text';
+    return 'crosshair';
   };
 
   // --- 렌더링: 입장 화면 ---
@@ -262,6 +336,7 @@ export default function Board() {
           <button onClick={() => setTool('eraser')} title="지우개" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'eraser' ? '#3b82f6' : '#9ca3af' }}><Eraser size={24} /></button>
           <button onClick={() => setTool('rect')} title="사각형" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'rect' ? '#3b82f6' : '#9ca3af' }}><Square size={24} /></button>
           <button onClick={() => setTool('circle')} title="원" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'circle' ? '#3b82f6' : '#9ca3af' }}><Circle size={24} /></button>
+          <button onClick={() => setTool('text')} title="텍스트" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'text' ? '#3b82f6' : '#9ca3af' }}><Type size={24} /></button>
         </div>
 
         {/* 색상 팔레트 */}
@@ -272,10 +347,13 @@ export default function Board() {
           ))}
         </div>
 
-        {/* 선 굵기 */}
+        {/* 굵기 / 글자 크기 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', borderRight: '2px solid #e5e7eb', paddingRight: '15px' }}>
-          <span style={{ fontSize: '12px', color: '#6b7280' }}>굵기</span>
+          <span style={{ fontSize: '12px', color: '#6b7280' }}>{tool === 'text' ? '크기' : '굵기'}</span>
           <input type="range" min="1" max="50" value={strokeWidth} onChange={(e) => setStrokeWidth(Number(e.target.value))} />
+          {tool === 'text' && (
+            <span style={{ fontSize: '11px', color: '#9ca3af', minWidth: '30px' }}>{Math.max(12, strokeWidth * 3)}px</span>
+          )}
         </div>
 
         {/* Undo / Redo / 저장 / 전체지우기 */}
@@ -319,6 +397,46 @@ export default function Board() {
         </div>
       </div>
 
+      {/* 텍스트 입력 오버레이 */}
+      {textInput && (
+        <textarea
+          ref={textareaRef}
+          value={textInput.value}
+          onChange={(e) => setTextInput({ ...textInput, value: e.target.value })}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              commitText();
+            }
+            if (e.key === 'Escape') {
+              setTextInput(null);
+            }
+          }}
+          onBlur={commitText}
+          placeholder="텍스트 입력 후 Enter"
+          style={{
+            position: 'absolute',
+            left: textInput.x,
+            top: textInput.y,
+            zIndex: 20,
+            background: 'transparent',
+            border: '1px dashed #3b82f6',
+            outline: 'none',
+            resize: 'none',
+            overflow: 'hidden',
+            minWidth: '120px',
+            minHeight: `${Math.max(12, strokeWidth * 3) + 10}px`,
+            fontSize: `${Math.max(12, strokeWidth * 3)}px`,
+            fontFamily: 'sans-serif',
+            color: currentColor,
+            lineHeight: '1.4',
+            padding: '2px 4px',
+            caretColor: currentColor,
+          }}
+          rows={1}
+        />
+      )}
+
       {/* 캔버스 영역 */}
       <Stage
         ref={stageRef}
@@ -327,7 +445,7 @@ export default function Board() {
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
-        style={{ cursor: tool === 'eraser' ? 'cell' : 'crosshair' }}
+        style={{ cursor: getCursor() }}
       >
         <Layer>
           {elements.map(renderElement)}
