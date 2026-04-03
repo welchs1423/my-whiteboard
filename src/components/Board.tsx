@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Stage, Layer, Line, Rect, Ellipse, Text, Arrow } from 'react-konva';
 import Konva from 'konva';
-import { Eraser, Pen, Trash2, Download, Users, MessageSquare, Send, Square, Circle, Undo2, Redo2, Type, ArrowRight, Minus } from 'lucide-react';
+import { Eraser, Pen, Trash2, Download, Users, MessageSquare, Send, Square, Circle, Undo2, Redo2, Type, ArrowRight, Minus, PaintBucket } from 'lucide-react';
 import { io } from 'socket.io-client';
 
 // 서버 연결 설정
@@ -20,7 +20,8 @@ interface DrawElement {
   points: number[];
   color: string;
   strokeWidth: number;
-  text?: string;    // 텍스트 도구 전용
+  filled?: boolean;  // 도형 채우기 전용
+  text?: string;     // 텍스트 도구 전용
   fontSize?: number; // 텍스트 도구 전용
 }
 
@@ -56,6 +57,8 @@ export default function Board() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [textInput, setTextInput] = useState<TextInputState | null>(null);
+  const [isFilled, setIsFilled] = useState<boolean>(false);
+  const [stageSize, setStageSize] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [cursors, setCursors] = useState<Record<string, CursorData>>({});
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
 
@@ -87,18 +90,37 @@ export default function Board() {
     socket.emit('draw_line', next);
   };
 
-  // 키보드 단축키 (Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z)
+  // 창 크기 반응형
+  useEffect(() => {
+    const handleResize = () => setStageSize({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // 키보드 단축키 (Ctrl+Z/Y + 툴 전환)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // 텍스트 입력 중에는 단축키 무시
-      if (textareaRef.current === document.activeElement) return;
+      const active = document.activeElement;
+      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
+
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
         e.preventDefault();
         handleUndo();
+        return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) {
         e.preventDefault();
         handleRedo();
+        return;
+      }
+      // 툴 단축키 (Ctrl 없이)
+      if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const toolMap: Record<string, ToolType> = {
+          p: 'pen', e: 'eraser', r: 'rect', c: 'circle',
+          t: 'text', l: 'straight', a: 'arrow',
+        };
+        if (toolMap[e.key]) setTool(toolMap[e.key]);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -225,12 +247,12 @@ export default function Board() {
     isDrawing.current = true;
     const newEl: DrawElement = {
       tool,
-      // 펜/지우개: 시작점만, 도형: 시작점+끝점(동일) 4개 값
       points: tool === 'pen' || tool === 'eraser'
         ? [pos.x, pos.y]
         : [pos.x, pos.y, pos.x, pos.y],
       color: currentColor,
       strokeWidth,
+      filled: isFilled,
     };
     setElements((prev) => [...prev, newEl]);
   };
@@ -302,7 +324,8 @@ export default function Board() {
       const height = Math.abs(el.points[3] - el.points[1]);
       return (
         <Rect key={i} x={x} y={y} width={width} height={height}
-          stroke={el.color} strokeWidth={el.strokeWidth} />
+          stroke={el.color} strokeWidth={el.strokeWidth}
+          fill={el.filled ? el.color : undefined} />
       );
     }
     if (el.tool === 'circle' && el.points.length >= 4) {
@@ -312,7 +335,8 @@ export default function Board() {
       const ry = Math.abs(el.points[3] - el.points[1]) / 2;
       return (
         <Ellipse key={i} x={cx} y={cy} radiusX={rx} radiusY={ry}
-          stroke={el.color} strokeWidth={el.strokeWidth} />
+          stroke={el.color} strokeWidth={el.strokeWidth}
+          fill={el.filled ? el.color : undefined} />
       );
     }
     if (el.tool === 'text' && el.text) {
@@ -391,13 +415,24 @@ export default function Board() {
 
         {/* 그리기 도구 */}
         <div style={{ display: 'flex', gap: '10px', borderRight: '2px solid #e5e7eb', paddingRight: '15px' }}>
-          <button onClick={() => setTool('pen')} title="펜" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'pen' ? '#3b82f6' : '#9ca3af' }}><Pen size={24} /></button>
-          <button onClick={() => setTool('eraser')} title="지우개" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'eraser' ? '#3b82f6' : '#9ca3af' }}><Eraser size={24} /></button>
-          <button onClick={() => setTool('rect')} title="사각형" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'rect' ? '#3b82f6' : '#9ca3af' }}><Square size={24} /></button>
-          <button onClick={() => setTool('circle')} title="원" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'circle' ? '#3b82f6' : '#9ca3af' }}><Circle size={24} /></button>
-          <button onClick={() => setTool('text')} title="텍스트" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'text' ? '#3b82f6' : '#9ca3af' }}><Type size={24} /></button>
-          <button onClick={() => setTool('straight')} title="직선" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'straight' ? '#3b82f6' : '#9ca3af' }}><Minus size={24} /></button>
-          <button onClick={() => setTool('arrow')} title="화살표" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'arrow' ? '#3b82f6' : '#9ca3af' }}><ArrowRight size={24} /></button>
+          <button onClick={() => setTool('pen')} title="펜 (P)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'pen' ? '#3b82f6' : '#9ca3af' }}><Pen size={24} /></button>
+          <button onClick={() => setTool('eraser')} title="지우개 (E)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'eraser' ? '#3b82f6' : '#9ca3af' }}><Eraser size={24} /></button>
+          <button onClick={() => setTool('rect')} title="사각형 (R)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'rect' ? '#3b82f6' : '#9ca3af' }}><Square size={24} /></button>
+          <button onClick={() => setTool('circle')} title="원 (C)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'circle' ? '#3b82f6' : '#9ca3af' }}><Circle size={24} /></button>
+          <button onClick={() => setTool('text')} title="텍스트 (T)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'text' ? '#3b82f6' : '#9ca3af' }}><Type size={24} /></button>
+          <button onClick={() => setTool('straight')} title="직선 (L)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'straight' ? '#3b82f6' : '#9ca3af' }}><Minus size={24} /></button>
+          <button onClick={() => setTool('arrow')} title="화살표 (A)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: tool === 'arrow' ? '#3b82f6' : '#9ca3af' }}><ArrowRight size={24} /></button>
+        </div>
+
+        {/* 채우기 토글 (도형 도구일 때만 활성화) */}
+        <div style={{ borderRight: '2px solid #e5e7eb', paddingRight: '15px' }}>
+          <button
+            onClick={() => setIsFilled((v) => !v)}
+            title={isFilled ? '채우기 ON' : '채우기 OFF'}
+            style={{ background: isFilled ? '#3b82f6' : 'none', border: isFilled ? 'none' : '1px solid #e5e7eb', borderRadius: '6px', cursor: 'pointer', color: isFilled ? 'white' : '#9ca3af', padding: '2px 6px', display: 'flex', alignItems: 'center' }}
+          >
+            <PaintBucket size={24} />
+          </button>
         </div>
 
         {/* 색상 팔레트 + 커스텀 색상 피커 */}
@@ -536,8 +571,8 @@ export default function Board() {
       {/* 캔버스 영역 */}
       <Stage
         ref={stageRef}
-        width={window.innerWidth}
-        height={window.innerHeight}
+        width={stageSize.width}
+        height={stageSize.height}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
