@@ -53,12 +53,6 @@ export default function Board() {
   const historyRef = useRef<DrawElement[][]>([[]]); // 히스토리 스택 (초기값: 빈 캔버스)
   const historyStepRef = useRef(0);                 // 현재 히스토리 위치
 
-  // 텍스트 입력창이 열릴 때 자동 포커스
-  useEffect(() => {
-    if (textInput) {
-      textareaRef.current?.focus();
-    }
-  }, [textInput]);
 
   // --- Undo / Redo ---
   const handleUndo = () => {
@@ -189,8 +183,9 @@ export default function Board() {
     const pos = e.target.getStage()?.getPointerPosition();
     if (!pos) return;
 
-    // 텍스트 도구: 드래그 없이 클릭 위치에 입력창 표시
+    // 텍스트 도구: 클릭 위치에 입력창 표시 (기존 텍스트 먼저 확정)
     if (tool === 'text') {
+      commitText();
       setTextInput({ x: pos.x, y: pos.y, value: '' });
       return;
     }
@@ -402,6 +397,7 @@ export default function Board() {
         <textarea
           ref={textareaRef}
           value={textInput.value}
+          autoFocus
           onChange={(e) => setTextInput({ ...textInput, value: e.target.value })}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -412,7 +408,6 @@ export default function Board() {
               setTextInput(null);
             }
           }}
-          onBlur={commitText}
           placeholder="텍스트 입력 후 Enter"
           style={{
             position: 'absolute',
