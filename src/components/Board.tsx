@@ -7,7 +7,7 @@ import {
   MousePointer, ChevronsUp, ChevronUp, ChevronsDown, FileJson, Upload,
   HelpCircle, ImageIcon, StickyNote, ZoomIn, ZoomOut, Copy,
   AlignLeft, AlignCenter, AlignRight, AlignStartVertical, AlignCenterVertical, AlignEndVertical,
-  Lock, Unlock, Magnet, Sun, Moon,
+  Lock, Unlock, Magnet, Sun, Moon, Triangle, Maximize2,
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { DrawElement, ToolType, DashStyle, Bounds } from '../utils/elementHelpers';
@@ -41,6 +41,7 @@ const SHORTCUTS = [
   ['E', '지우개'],
   ['R', '사각형'],
   ['C', '원'],
+  ['V', '삼각형'],
   ['T', '텍스트'],
   ['L', '직선'],
   ['A', '화살표'],
@@ -52,6 +53,9 @@ const SHORTCUTS = [
   ['Ctrl+C', '선택 복사'],
   ['Ctrl+V', '붙여넣기'],
   ['Ctrl+0', '줌 초기화'],
+  ['F', '전체 요소 보기 (줌 맞춤)'],
+  ['↑↓←→', '선택 요소 1px 이동'],
+  ['Shift+↑↓←→', '선택 요소 10px 이동'],
   ['Space+드래그', '캔버스 이동'],
   ['마우스 휠', '확대/축소'],
   ['Delete/Backspace', '선택 삭제'],
@@ -397,6 +401,27 @@ export default function Board() {
     y: (sy - stagePosRef.current.y) / stageScaleRef.current,
   });
 
+  // ── 전체 요소 보기 (Zoom to Fit) ──
+  const handleZoomToFit = () => {
+    const els = elementsRef.current;
+    if (els.length === 0) { setStageScale(1); setStagePos({ x: 0, y: 0 }); return; }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    els.forEach(el => {
+      const b = getElementBounds(el);
+      if (b) {
+        minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+        maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
+      }
+    });
+    if (minX === Infinity) return;
+    const pad = 80;
+    const w = window.innerWidth, h = window.innerHeight;
+    const cw = maxX - minX || 1, ch = maxY - minY || 1;
+    const newScale = Math.min((w - pad * 2) / cw, (h - pad * 2) / ch, 10);
+    setStageScale(newScale);
+    setStagePos({ x: (w - cw * newScale) / 2 - minX * newScale, y: (h - ch * newScale) / 2 - minY * newScale });
+  };
+
   /** 그리드 스냅 (28px 격자) */
   const snap = (v: number) => isSnapEnabledRef.current ? Math.round(v / 28) * 28 : v;
 
@@ -546,11 +571,24 @@ export default function Board() {
       if (e.key === '?') { setShowHelp((v) => !v); return; }
 
       if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        if (e.key === 'f' || e.key === 'F') { e.preventDefault(); handleZoomToFit(); return; }
         const map: Record<string, ToolType> = {
           p: 'pen', e: 'eraser', r: 'rect', c: 'circle',
-          t: 'text', l: 'straight', a: 'arrow', s: 'select', n: 'sticky',
+          t: 'text', l: 'straight', a: 'arrow', s: 'select', n: 'sticky', v: 'triangle',
         };
         if (map[e.key]) { setTool(map[e.key]); setSelectedIndices(new Set()); }
+      }
+
+      // 화살표 키로 선택 요소 이동
+      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && selectedIndicesRef.current.size > 0) {
+        e.preventDefault();
+        const delta = e.shiftKey ? 10 : 1;
+        const dx = e.key === 'ArrowLeft' ? -delta : e.key === 'ArrowRight' ? delta : 0;
+        const dy = e.key === 'ArrowUp' ? -delta : e.key === 'ArrowDown' ? delta : 0;
+        const upd = elementsRef.current.map((el, i) =>
+          selectedIndicesRef.current.has(i) && !el.locked ? moveElementBy(el, dx, dy) : el
+        );
+        setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -897,6 +935,16 @@ export default function Board() {
           dash={dash} opacity={op} />
       );
     }
+    if (el.tool === 'triangle' && el.points.length >= 4) {
+      const [x1, y1, x2, y2] = el.points;
+      const midX = (x1 + x2) / 2;
+      return (
+        <Line key={i} points={[midX, y1, x2, y2, x1, y2]} closed
+          stroke={el.color} strokeWidth={el.strokeWidth}
+          fill={el.filled ? el.color : undefined}
+          dash={dash} opacity={op} lineCap="round" lineJoin="round" />
+      );
+    }
     if (el.tool === 'text' && el.text) {
       return (
         <Text key={i} x={el.points[0]} y={el.points[1]} text={el.text}
@@ -1048,6 +1096,7 @@ export default function Board() {
             <button onClick={() => setTool('straight')} title="직선 (L)" style={toolBtn(tool==='straight')}><Minus size={22}/></button>
             <button onClick={() => setTool('arrow')} title="화살표 (A)" style={toolBtn(tool==='arrow')}><ArrowRight size={22}/></button>
             <button onClick={() => setTool('sticky')} title="스티커 메모 (N)" style={toolBtn(tool==='sticky')}><StickyNote size={22}/></button>
+            <button onClick={() => setTool('triangle')} title="삼각형 (V)" style={toolBtn(tool==='triangle')}><Triangle size={22}/></button>
           </div>
 
           {/* 채우기 */}
@@ -1142,6 +1191,8 @@ export default function Board() {
         <button onClick={() => { const ns = Math.min(stageScale*1.2, 10); setStageScale(ns); }} title="확대" style={{ ...iconBtn, padding:'0' }}><ZoomIn size={16}/></button>
         <span style={{ width:'1px', height:'14px', backgroundColor: theme.border }} />
         <button onClick={() => { setStageScale(1); setStagePos({x:0,y:0}); }} title="리셋 (Ctrl+0)" style={{ ...iconBtn, fontSize:'11px', padding:'0' }}>100%</button>
+        <span style={{ width:'1px', height:'14px', backgroundColor: theme.border }} />
+        <button onClick={handleZoomToFit} title="전체 요소 보기 (F)" style={{ ...iconBtn, padding:'0' }}><Maximize2 size={16}/></button>
       </div>
 
       {/* 레이어 관리 패널 (선택 시) */}

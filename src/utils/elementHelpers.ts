@@ -2,7 +2,7 @@
 
 export type ToolType =
   | 'pen' | 'eraser' | 'rect' | 'circle' | 'text'
-  | 'arrow' | 'straight' | 'select' | 'sticky' | 'image';
+  | 'arrow' | 'straight' | 'select' | 'sticky' | 'image' | 'triangle';
 
 export type DashStyle = 'solid' | 'dashed' | 'dotted';
 
@@ -57,7 +57,7 @@ export function getElementBounds(el: DrawElement): Bounds | null {
     return { x: minX - pad, y: minY - pad, width: maxX - minX + pad * 2, height: maxY - minY + pad * 2 };
   }
 
-  if (['rect', 'circle', 'straight', 'arrow', 'sticky'].includes(el.tool)) {
+  if (['rect', 'circle', 'straight', 'arrow', 'sticky', 'triangle'].includes(el.tool)) {
     if (el.points.length < 4) return null;
     const x = Math.min(el.points[0], el.points[2]);
     const y = Math.min(el.points[1], el.points[3]);
