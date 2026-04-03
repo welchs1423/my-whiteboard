@@ -9,6 +9,12 @@ const socket = io('http://localhost:3001');
 
 type ToolType = 'pen' | 'eraser' | 'rect' | 'circle' | 'text' | 'arrow' | 'straight';
 
+interface CursorData {
+  x: number;
+  y: number;
+  nickname: string;
+}
+
 interface DrawElement {
   tool: ToolType;
   points: number[];
@@ -31,6 +37,12 @@ interface ChatMessage {
 }
 
 const COLORS = ['#000000', '#ef4444', '#3b82f6', '#22c55e', '#f59e0b'];
+const CURSOR_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6'];
+
+const getCursorColor = (id: string) => {
+  const hash = id.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+  return CURSOR_COLORS[hash % CURSOR_COLORS.length];
+};
 
 export default function Board() {
   // --- 상태 관리 ---
@@ -44,12 +56,16 @@ export default function Board() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [textInput, setTextInput] = useState<TextInputState | null>(null);
+  const [cursors, setCursors] = useState<Record<string, CursorData>>({});
+  const [typingUsers, setTypingUsers] = useState<string[]>([]);
 
   // --- Ref 설정 ---
   const isDrawing = useRef(false);
   const stageRef = useRef<Konva.Stage>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const lastCursorEmit = useRef(0);
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyRef = useRef<DrawElement[][]>([[]]); // 히스토리 스택 (초기값: 빈 캔버스)
   const historyStepRef = useRef(0);                 // 현재 히스토리 위치
 
@@ -101,12 +117,28 @@ export default function Board() {
     socket.on('receive_message', (message: ChatMessage) => {
       setMessages((prev) => [...prev, message]);
     });
+    socket.on('cursor_move', (data: CursorData & { id: string }) => {
+      setCursors((prev) => ({ ...prev, [data.id]: { x: data.x, y: data.y, nickname: data.nickname } }));
+    });
+    socket.on('cursor_leave', (id: string) => {
+      setCursors((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    });
+    socket.on('typing', (name: string) => {
+      setTypingUsers((prev) => prev.includes(name) ? prev : [...prev, name]);
+    });
+    socket.on('stop_typing', (name: string) => {
+      setTypingUsers((prev) => prev.filter((n) => n !== name));
+    });
 
     return () => {
       socket.off('draw_line');
       socket.off('clear_all');
       socket.off('user_list');
       socket.off('receive_message');
+      socket.off('cursor_move');
+      socket.off('cursor_leave');
+      socket.off('typing');
+      socket.off('stop_typing');
     };
   }, []);
 
@@ -204,9 +236,17 @@ export default function Board() {
   };
 
   const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (!isDrawing.current) return;
     const point = e.target.getStage()?.getPointerPosition();
     if (!point) return;
+
+    // 커서 위치 실시간 전송 (50ms 스로틀)
+    const now = Date.now();
+    if (now - lastCursorEmit.current > 50) {
+      socket.emit('cursor_move', { x: point.x, y: point.y });
+      lastCursorEmit.current = now;
+    }
+
+    if (!isDrawing.current) return;
 
     setElements((prev) => {
       const updated = [...prev];
@@ -426,11 +466,32 @@ export default function Board() {
           ))}
           <div ref={chatEndRef} />
         </div>
+        {/* 입력 중 표시 */}
+        {typingUsers.length > 0 && (
+          <div style={{ padding: '4px 12px', fontSize: '11px', color: '#9ca3af', fontStyle: 'italic' }}>
+            {typingUsers.join(', ')}이(가) 입력 중...
+          </div>
+        )}
         <div style={{ padding: '10px', borderTop: '1px solid #e5e7eb', display: 'flex', gap: '5px' }}>
-          <input type="text" value={inputText} onChange={(e) => setInputText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()} placeholder="메시지..." style={{ flex: 1, padding: '6px', borderRadius: '4px', border: '1px solid #d1d5db', fontSize: '13px' }} />
+          <input type="text" value={inputText} onChange={(e) => {
+            setInputText(e.target.value);
+            socket.emit('typing', nickname);
+            if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+            typingTimerRef.current = setTimeout(() => socket.emit('stop_typing', nickname), 1500);
+          }} onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()} placeholder="메시지..." style={{ flex: 1, padding: '6px', borderRadius: '4px', border: '1px solid #d1d5db', fontSize: '13px' }} />
           <button onClick={handleSendMessage} style={{ padding: '6px', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}><Send size={16} /></button>
         </div>
       </div>
+
+      {/* 다른 사용자 커서 오버레이 */}
+      {Object.entries(cursors).map(([id, cursor]) => (
+        <div key={id} style={{ position: 'absolute', left: cursor.x, top: cursor.y, zIndex: 15, pointerEvents: 'none', transform: 'translate(-4px, -4px)' }}>
+          <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: getCursorColor(id), border: '2px solid white', boxShadow: '0 0 4px rgba(0,0,0,0.3)' }} />
+          <div style={{ position: 'absolute', top: '14px', left: '8px', fontSize: '11px', fontWeight: 'bold', color: 'white', backgroundColor: getCursorColor(id), padding: '1px 6px', borderRadius: '4px', whiteSpace: 'nowrap', boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }}>
+            {cursor.nickname}
+          </div>
+        </div>
+      ))}
 
       {/* 텍스트 입력 오버레이 */}
       {textInput && (
