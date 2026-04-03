@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Stage, Layer, Line, Rect, Ellipse, Text, Arrow } from 'react-konva';
 import Konva from 'konva';
-import { Eraser, Pen, Trash2, Download, Users, MessageSquare, Send, Square, Circle, Undo2, Redo2, Type, ArrowRight, Minus, PaintBucket } from 'lucide-react';
+import { Eraser, Pen, Trash2, Download, Users, MessageSquare, Send, Square, Circle, Undo2, Redo2, Type, ArrowRight, Minus, PaintBucket, Grid2X2, ChevronDown } from 'lucide-react';
 import { io } from 'socket.io-client';
 
 // 서버 연결 설정
@@ -58,6 +58,8 @@ export default function Board() {
   const [inputText, setInputText] = useState('');
   const [textInput, setTextInput] = useState<TextInputState | null>(null);
   const [isFilled, setIsFilled] = useState<boolean>(false);
+  const [showGrid, setShowGrid] = useState<boolean>(true);
+  const [isChatOpen, setIsChatOpen] = useState<boolean>(true);
   const [stageSize, setStageSize] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [cursors, setCursors] = useState<Record<string, CursorData>>({});
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
@@ -95,6 +97,23 @@ export default function Board() {
     const handleResize = () => setStageSize({ width: window.innerWidth, height: window.innerHeight });
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // 버그 수정: 드래그 중 캔버스 밖에서 마우스를 떼도 드로잉 종료
+  useEffect(() => {
+    const handleWindowMouseUp = () => {
+      if (!isDrawing.current) return;
+      isDrawing.current = false;
+      setElements((latest) => {
+        const newHistory = historyRef.current.slice(0, historyStepRef.current + 1);
+        newHistory.push([...latest]);
+        historyRef.current = newHistory;
+        historyStepRef.current = newHistory.length - 1;
+        return latest;
+      });
+    };
+    window.addEventListener('mouseup', handleWindowMouseUp);
+    return () => window.removeEventListener('mouseup', handleWindowMouseUp);
   }, []);
 
   // 키보드 단축키 (Ctrl+Z/Y + 툴 전환)
@@ -184,6 +203,9 @@ export default function Board() {
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
     socket.emit('send_message', messageData);
+    // 버그 수정: 전송 즉시 타이핑 표시 제거
+    socket.emit('stop_typing', nickname);
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     setInputText('');
   };
 
@@ -271,6 +293,7 @@ export default function Board() {
     if (!isDrawing.current) return;
 
     setElements((prev) => {
+      if (prev.length === 0) return prev; // 버그 수정: 빈 배열 crash 방어
       const updated = [...prev];
       const last = { ...updated[updated.length - 1] };
 
@@ -408,7 +431,12 @@ export default function Board() {
 
   // --- 렌더링: 메인 화이트보드 ---
   return (
-    <div style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', backgroundColor: '#f9fafb' }}>
+    <div style={{
+      position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden',
+      backgroundColor: '#f9fafb',
+      backgroundImage: showGrid ? 'radial-gradient(circle, #c8cdd6 1px, transparent 1px)' : 'none',
+      backgroundSize: showGrid ? '28px 28px' : 'auto',
+    }}>
 
       {/* 상단 도구 모음 */}
       <div style={{ position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)', zIndex: 10, display: 'flex', gap: '15px', padding: '10px 20px', backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', alignItems: 'center' }}>
@@ -466,10 +494,11 @@ export default function Board() {
           )}
         </div>
 
-        {/* Undo / Redo / 저장 / 전체지우기 */}
+        {/* Undo / Redo / 그리드 / 저장 / 전체지우기 */}
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
           <button onClick={handleUndo} title="실행 취소 (Ctrl+Z)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><Undo2 size={24} /></button>
           <button onClick={handleRedo} title="다시 실행 (Ctrl+Y)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><Redo2 size={24} /></button>
+          <button onClick={() => setShowGrid(v => !v)} title="그리드 배경 토글" style={{ background: 'none', border: 'none', cursor: 'pointer', color: showGrid ? '#3b82f6' : '#9ca3af' }}><Grid2X2 size={24} /></button>
           <button onClick={handleDownload} title="저장" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><Download size={24} /></button>
           <button onClick={handleClearAll} title="전체 지우기" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}><Trash2 size={24} /></button>
         </div>
@@ -490,32 +519,39 @@ export default function Board() {
       </div>
 
       {/* 우측 하단 채팅창 */}
-      <div style={{ position: 'absolute', bottom: '20px', right: '20px', zIndex: 10, width: '280px', height: '350px', backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 4px 15px rgba(0,0,0,0.1)', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '12px', borderBottom: '1px solid #e5e7eb', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}><MessageSquare size={18} /> 채팅</div>
-        <div style={{ flex: 1, padding: '10px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          {messages.map((msg, i) => (
-            <div key={i} style={{ alignSelf: msg.sender === nickname ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
-              <div style={{ fontSize: '10px', color: '#9ca3af', textAlign: msg.sender === nickname ? 'right' : 'left' }}>{msg.sender}</div>
-              <div style={{ padding: '6px 10px', borderRadius: '10px', fontSize: '13px', backgroundColor: msg.sender === nickname ? '#3b82f6' : '#f3f4f6', color: msg.sender === nickname ? 'white' : '#374151' }}>{msg.text}</div>
+      <div style={{ position: 'absolute', bottom: '20px', right: '20px', zIndex: 10, width: '280px', backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 4px 15px rgba(0,0,0,0.1)', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '12px', borderBottom: isChatOpen ? '1px solid #e5e7eb' : 'none', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }} onClick={() => setIsChatOpen(v => !v)}>
+          <MessageSquare size={18} />
+          <span style={{ flex: 1 }}>채팅 {messages.length > 0 && !isChatOpen && <span style={{ fontSize: '11px', backgroundColor: '#3b82f6', color: 'white', borderRadius: '10px', padding: '1px 6px' }}>{messages.length}</span>}</span>
+          <ChevronDown size={16} style={{ color: '#9ca3af', transform: isChatOpen ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.2s' }} />
+        </div>
+        {isChatOpen && (
+          <>
+            <div style={{ height: '260px', padding: '10px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {messages.map((msg, i) => (
+                <div key={i} style={{ alignSelf: msg.sender === nickname ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
+                  <div style={{ fontSize: '10px', color: '#9ca3af', textAlign: msg.sender === nickname ? 'right' : 'left' }}>{msg.sender}</div>
+                  <div style={{ padding: '6px 10px', borderRadius: '10px', fontSize: '13px', backgroundColor: msg.sender === nickname ? '#3b82f6' : '#f3f4f6', color: msg.sender === nickname ? 'white' : '#374151' }}>{msg.text}</div>
+                </div>
+              ))}
+              <div ref={chatEndRef} />
             </div>
-          ))}
-          <div ref={chatEndRef} />
-        </div>
-        {/* 입력 중 표시 */}
-        {typingUsers.length > 0 && (
-          <div style={{ padding: '4px 12px', fontSize: '11px', color: '#9ca3af', fontStyle: 'italic' }}>
-            {typingUsers.join(', ')}이(가) 입력 중...
-          </div>
+            {typingUsers.length > 0 && (
+              <div style={{ padding: '4px 12px', fontSize: '11px', color: '#9ca3af', fontStyle: 'italic' }}>
+                {typingUsers.join(', ')}이(가) 입력 중...
+              </div>
+            )}
+            <div style={{ padding: '10px', borderTop: '1px solid #e5e7eb', display: 'flex', gap: '5px' }}>
+              <input type="text" value={inputText} onChange={(e) => {
+                setInputText(e.target.value);
+                socket.emit('typing', nickname);
+                if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+                typingTimerRef.current = setTimeout(() => socket.emit('stop_typing', nickname), 1500);
+              }} onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()} placeholder="메시지..." style={{ flex: 1, padding: '6px', borderRadius: '4px', border: '1px solid #d1d5db', fontSize: '13px' }} />
+              <button onClick={handleSendMessage} style={{ padding: '6px', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}><Send size={16} /></button>
+            </div>
+          </>
         )}
-        <div style={{ padding: '10px', borderTop: '1px solid #e5e7eb', display: 'flex', gap: '5px' }}>
-          <input type="text" value={inputText} onChange={(e) => {
-            setInputText(e.target.value);
-            socket.emit('typing', nickname);
-            if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
-            typingTimerRef.current = setTimeout(() => socket.emit('stop_typing', nickname), 1500);
-          }} onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()} placeholder="메시지..." style={{ flex: 1, padding: '6px', borderRadius: '4px', border: '1px solid #d1d5db', fontSize: '13px' }} />
-          <button onClick={handleSendMessage} style={{ padding: '6px', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}><Send size={16} /></button>
-        </div>
       </div>
 
       {/* 다른 사용자 커서 오버레이 */}
