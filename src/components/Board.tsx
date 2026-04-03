@@ -7,7 +7,7 @@ import {
   MousePointer, ChevronsUp, ChevronUp, ChevronsDown, FileJson, Upload,
   HelpCircle, ImageIcon, StickyNote, ZoomIn, ZoomOut, Copy,
   AlignLeft, AlignCenter, AlignRight, AlignStartVertical, AlignCenterVertical, AlignEndVertical,
-  Lock, Unlock, Magnet,
+  Lock, Unlock, Magnet, Sun, Moon,
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { DrawElement, ToolType, DashStyle, Bounds } from '../utils/elementHelpers';
@@ -22,6 +22,7 @@ const socket = io('http://localhost:3001');
 interface CursorData { x: number; y: number; nickname: string; }
 interface TextInputState { x: number; y: number; value: string; targetIdx?: number; }
 interface ChatMessage { text: string; sender: string; time: string; }
+interface Toast { id: string; message: string; type: 'join' | 'leave' | 'info'; }
 
 // ── 상수 ──────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,12 @@ export default function Board() {
   const [showHelp, setShowHelp] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [, setImageLoadTick] = useState(0); // 이미지 로딩 후 강제 리렌더
+  // 다크 모드
+  const [isDarkMode, setIsDarkMode] = useState(false);
+  // 최근 사용 색상 (최대 5개)
+  const [recentColors, setRecentColors] = useState<string[]>([]);
+  // 토스트 알림
+  const [toasts, setToasts] = useState<Toast[]>([]);
 
   // ── Refs ──
   const isDrawing = useRef(false);
@@ -124,6 +131,40 @@ export default function Board() {
   const showHelpRef = useRef(false);
   const spaceHeldRef = useRef(false);
   const isSnapEnabledRef = useRef(false);
+
+  // ── 테마 ──
+  const theme = {
+    bg: isDarkMode ? '#111827' : '#f9fafb',
+    panel: isDarkMode ? '#1f2937' : 'white',
+    border: isDarkMode ? '#374151' : '#e5e7eb',
+    text: isDarkMode ? '#f3f4f6' : '#374151',
+    textMuted: isDarkMode ? '#9ca3af' : '#6b7280',
+    textSubtle: isDarkMode ? '#6b7280' : '#9ca3af',
+    shadow: isDarkMode ? '0 4px 6px rgba(0,0,0,0.5)' : '0 4px 6px rgba(0,0,0,0.1)',
+    gridColor: isDarkMode ? '#374151' : '#c8cdd6',
+    inputBg: isDarkMode ? '#374151' : 'white',
+    inputBorder: isDarkMode ? '#4b5563' : '#d1d5db',
+    chatBubbleSelf: '#3b82f6',
+    chatBubbleOther: isDarkMode ? '#374151' : '#f3f4f6',
+    chatTextOther: isDarkMode ? '#f3f4f6' : '#374151',
+  };
+
+  // ── 토스트 ──
+  const showToast = (message: string, type: Toast['type'] = 'info') => {
+    const id = generateId();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
+  };
+
+  // ── 색상 선택 (최근 색상 기록) ──
+  const selectColor = (color: string) => {
+    setCurrentColor(color);
+    if (tool === 'eraser') setTool('pen');
+    setRecentColors(prev => {
+      const filtered = prev.filter(c => c !== color);
+      return [color, ...filtered].slice(0, 5);
+    });
+  };
 
   // Ref 동기화
   elementsRef.current = elements;
@@ -492,7 +533,7 @@ export default function Board() {
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIndicesRef.current.size > 0) {
         e.preventDefault();
         const idxSet = selectedIndicesRef.current;
-        const updated = elementsRef.current.filter((_, i) => !idxSet.has(i));
+        const updated = elementsRef.current.filter((el, i) => !idxSet.has(i) || el.locked);
         setElements(updated); setSelectedIndices(new Set());
         saveHistoryWith(updated); socket.emit('draw_line', updated);
         return;
@@ -533,8 +574,10 @@ export default function Board() {
     });
     socket.on('typing', (name: string) => setTypingUsers((p) => p.includes(name) ? p : [...p, name]));
     socket.on('stop_typing', (name: string) => setTypingUsers((p) => p.filter((n) => n !== name)));
+    socket.on('user_joined', (name: string) => showToast(`${name}님이 입장했습니다`, 'join'));
+    socket.on('user_left', (name: string) => showToast(`${name}님이 퇴장했습니다`, 'leave'));
     return () => {
-      ['draw_line','clear_all','user_list','receive_message','cursor_move','cursor_leave','typing','stop_typing']
+      ['draw_line','clear_all','user_list','receive_message','cursor_move','cursor_leave','typing','stop_typing','user_joined','user_left']
         .forEach((ev) => socket.off(ev));
     };
   }, []);
@@ -791,6 +834,26 @@ export default function Board() {
     setElements((latest) => { saveHistoryWith(latest); return latest; });
   };
 
+  // ── 텍스트/스티커 더블클릭 편집 ──
+  const handleDblClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (tool !== 'select') return;
+    const stage = e.target.getStage();
+    if (!stage) return;
+    const pos = getCanvasPos(stage);
+    if (!pos) return;
+    const idx = getElementAtPoint(elements, pos.x, pos.y);
+    if (idx === null) return;
+    const el = elements[idx];
+    if (el.locked) return;
+    if (el.tool === 'text') {
+      setTextInput({ x: el.points[0], y: el.points[1], value: el.text || '', targetIdx: idx });
+    } else if (el.tool === 'sticky') {
+      const nx = Math.min(el.points[0], el.points[2]) + 8;
+      const ny = Math.min(el.points[1], el.points[3]) + 8;
+      setTextInput({ x: nx, y: ny, value: el.text || '', targetIdx: idx });
+    }
+  };
+
   // ── 드래그 앤 드롭 이미지 ──
 
   const handleDrop = (e: React.DragEvent) => {
@@ -913,30 +976,33 @@ export default function Board() {
   // ── 스타일 헬퍼 ──
   const toolBtn = (active: boolean): React.CSSProperties => ({
     background: 'none', border: 'none', cursor: 'pointer',
-    color: active ? '#3b82f6' : '#9ca3af', display: 'flex', alignItems: 'center', padding: '2px',
+    color: active ? '#3b82f6' : theme.textSubtle, display: 'flex', alignItems: 'center', padding: '2px',
   });
-  const iconBtn: React.CSSProperties = { background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280', display: 'flex', alignItems: 'center', padding: '2px' };
+  const iconBtn: React.CSSProperties = { background: 'none', border: 'none', cursor: 'pointer', color: theme.textMuted, display: 'flex', alignItems: 'center', padding: '2px' };
   const layerBtn = (disabled = false): React.CSSProperties => ({
     background: 'none', border: 'none', cursor: disabled ? 'default' : 'pointer',
-    color: disabled ? '#d1d5db' : '#6b7280', display: 'flex', alignItems: 'center', padding: '4px', borderRadius: '4px',
+    color: disabled ? theme.border : theme.textMuted, display: 'flex', alignItems: 'center', padding: '4px', borderRadius: '4px',
   });
   const dashBtn = (active: boolean): React.CSSProperties => ({
-    padding: '3px 8px', border: active ? '2px solid #3b82f6' : '1px solid #e5e7eb',
+    padding: '3px 8px', border: active ? '2px solid #3b82f6' : `1px solid ${theme.border}`,
     borderRadius: '4px', cursor: 'pointer', background: active ? '#eff6ff' : 'none',
-    color: active ? '#3b82f6' : '#6b7280', fontSize: '13px', fontWeight: 'bold', lineHeight: 1,
+    color: active ? '#3b82f6' : theme.textMuted, fontSize: '13px', fontWeight: 'bold', lineHeight: 1,
   });
 
   // ── 입장 화면 ──
   if (!isJoined) {
     return (
-      <div style={{ display:'flex', justifyContent:'center', alignItems:'center', height:'100vh', backgroundColor:'#f3f4f6' }}>
-        <div style={{ padding:'30px', backgroundColor:'white', borderRadius:'12px', boxShadow:'0 4px 6px rgba(0,0,0,0.1)', display:'flex', flexDirection:'column', gap:'15px', width:'300px' }}>
-          <h2 style={{ margin:0, textAlign:'center', color:'#374151' }}>화이트보드 입장</h2>
+      <div style={{ display:'flex', justifyContent:'center', alignItems:'center', height:'100vh', backgroundColor: isDarkMode ? '#111827' : '#f3f4f6' }}>
+        <div style={{ padding:'30px', backgroundColor: isDarkMode ? '#1f2937' : 'white', borderRadius:'12px', boxShadow:'0 4px 6px rgba(0,0,0,0.1)', display:'flex', flexDirection:'column', gap:'15px', width:'300px' }}>
+          <h2 style={{ margin:0, textAlign:'center', color: isDarkMode ? '#f3f4f6' : '#374151' }}>화이트보드 입장</h2>
           <input type="text" value={nickname} onChange={(e) => setNickname(e.target.value)}
             onKeyDown={(e) => e.key==='Enter' && handleJoin()} placeholder="닉네임을 입력하세요"
-            style={{ padding:'10px', borderRadius:'6px', border:'1px solid #d1d5db' }} />
+            style={{ padding:'10px', borderRadius:'6px', border:`1px solid ${isDarkMode ? '#374151' : '#d1d5db'}`, backgroundColor: isDarkMode ? '#374151' : 'white', color: isDarkMode ? '#f3f4f6' : '#374151' }} />
           <button onClick={handleJoin} style={{ padding:'10px', backgroundColor:'#3b82f6', color:'white', border:'none', borderRadius:'6px', cursor:'pointer', fontWeight:'bold' }}>
             입장하기
+          </button>
+          <button onClick={() => setIsDarkMode(v => !v)} style={{ padding:'6px', background:'none', border:`1px solid ${isDarkMode ? '#374151' : '#d1d5db'}`, borderRadius:'6px', cursor:'pointer', color: isDarkMode ? '#f3f4f6' : '#374151', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', fontSize:'13px' }}>
+            {isDarkMode ? <Sun size={14}/> : <Moon size={14}/>} {isDarkMode ? '라이트 모드' : '다크 모드'}
           </button>
         </div>
       </div>
@@ -948,8 +1014,8 @@ export default function Board() {
     <div
       style={{
         position:'relative', width:'100vw', height:'100vh', overflow:'hidden',
-        backgroundColor:'#f9fafb',
-        backgroundImage: showGrid ? 'radial-gradient(circle, #c8cdd6 1px, transparent 1px)' : 'none',
+        backgroundColor: theme.bg,
+        backgroundImage: showGrid ? `radial-gradient(circle, ${theme.gridColor} 1px, transparent 1px)` : 'none',
         backgroundSize: showGrid ? `${28*stageScale}px ${28*stageScale}px` : 'auto',
         backgroundPosition: showGrid ? `${stagePos.x}px ${stagePos.y}px` : 'auto',
         cursor: getCursor(),
@@ -969,10 +1035,10 @@ export default function Board() {
       {/* ── 상단 도구 모음 ── */}
       <div style={{ position:'absolute', top:'16px', left:'50%', transform:'translateX(-50%)', zIndex:10, display:'flex', flexDirection:'column', gap:'6px', alignItems:'center' }}>
         {/* 1행: 도구 */}
-        <div style={{ display:'flex', gap:'12px', padding:'8px 16px', backgroundColor:'white', borderRadius:'12px', boxShadow:'0 4px 6px rgba(0,0,0,0.1)', alignItems:'center' }}>
+        <div style={{ display:'flex', gap:'12px', padding:'8px 16px', backgroundColor: theme.panel, borderRadius:'12px', boxShadow: theme.shadow, alignItems:'center' }}>
 
           {/* 도구 선택 */}
-          <div style={{ display:'flex', gap:'6px', borderRight:'2px solid #e5e7eb', paddingRight:'12px' }}>
+          <div style={{ display:'flex', gap:'6px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
             <button onClick={() => { setTool('select'); setSelectedIndices(new Set()); }} title="선택 (S)" style={toolBtn(tool==='select')}><MousePointer size={22}/></button>
             <button onClick={() => setTool('pen')} title="펜 (P)" style={toolBtn(tool==='pen')}><Pen size={22}/></button>
             <button onClick={() => setTool('eraser')} title="지우개 (E)" style={toolBtn(tool==='eraser')}><Eraser size={22}/></button>
@@ -985,27 +1051,39 @@ export default function Board() {
           </div>
 
           {/* 채우기 */}
-          <div style={{ borderRight:'2px solid #e5e7eb', paddingRight:'12px' }}>
+          <div style={{ borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
             <button onClick={() => setIsFilled(v => !v)} title={isFilled ? '채우기 ON' : '채우기 OFF'}
-              style={{ background:isFilled?'#3b82f6':'none', border:isFilled?'none':'1px solid #e5e7eb', borderRadius:'6px', cursor:'pointer', color:isFilled?'white':'#9ca3af', padding:'2px 6px', display:'flex', alignItems:'center' }}>
+              style={{ background:isFilled?'#3b82f6':'none', border:isFilled?'none':`1px solid ${theme.border}`, borderRadius:'6px', cursor:'pointer', color:isFilled?'white': theme.textSubtle, padding:'2px 6px', display:'flex', alignItems:'center' }}>
               <PaintBucket size={22}/>
             </button>
           </div>
 
           {/* 색상 */}
-          <div style={{ display:'flex', gap:'8px', borderRight:'2px solid #e5e7eb', paddingRight:'12px', alignItems:'center' }}>
-            {COLORS.map(c => (
-              <button key={c} onClick={() => { setCurrentColor(c); if (tool==='eraser') setTool('pen'); }}
-                style={{ width:'22px', height:'22px', borderRadius:'50%', backgroundColor:c, border: currentColor===c && tool!=='eraser' ? '3px solid #3b82f6' : '1px solid #e5e7eb', cursor:'pointer' }} />
-            ))}
-            <label title="커스텀 색상" style={{ position:'relative', width:'22px', height:'22px', cursor:'pointer' }}>
-              <input type="color" value={currentColor} onChange={(e) => { setCurrentColor(e.target.value); if (tool==='eraser') setTool('pen'); }}
-                style={{ position:'absolute', opacity:0, width:'100%', height:'100%', cursor:'pointer', top:0, left:0 }} />
-              <div style={{ width:'22px', height:'22px', borderRadius:'50%', background:'conic-gradient(red,yellow,lime,cyan,blue,magenta,red)', border: !COLORS.includes(currentColor)&&tool!=='eraser' ? '3px solid #3b82f6' : '1px solid #e5e7eb' }} />
-            </label>
+          <div style={{ display:'flex', gap:'8px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px', alignItems:'center', flexWrap:'wrap', maxWidth:'260px' }}>
+            <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
+              {COLORS.map(c => (
+                <button key={c} onClick={() => selectColor(c)}
+                  style={{ width:'22px', height:'22px', borderRadius:'50%', backgroundColor:c, border: currentColor===c && tool!=='eraser' ? '3px solid #3b82f6' : `1px solid ${theme.border}`, cursor:'pointer' }} />
+              ))}
+              <label title="커스텀 색상" style={{ position:'relative', width:'22px', height:'22px', cursor:'pointer' }}>
+                <input type="color" value={currentColor} onChange={(e) => selectColor(e.target.value)}
+                  style={{ position:'absolute', opacity:0, width:'100%', height:'100%', cursor:'pointer', top:0, left:0 }} />
+                <div style={{ width:'22px', height:'22px', borderRadius:'50%', background:'conic-gradient(red,yellow,lime,cyan,blue,magenta,red)', border: !COLORS.includes(currentColor)&&tool!=='eraser' ? '3px solid #3b82f6' : `1px solid ${theme.border}` }} />
+              </label>
+            </div>
+            {/* 최근 사용 색상 */}
+            {recentColors.length > 0 && (
+              <div style={{ display:'flex', gap:'4px', alignItems:'center', borderLeft:`1px solid ${theme.border}`, paddingLeft:'6px' }}>
+                <span style={{ fontSize:'10px', color:theme.textSubtle, whiteSpace:'nowrap' }}>최근</span>
+                {recentColors.map((c, i) => (
+                  <button key={i} onClick={() => selectColor(c)} title={c}
+                    style={{ width:'18px', height:'18px', borderRadius:'50%', backgroundColor:c, border: currentColor===c ? '2px solid #3b82f6' : `1px solid ${theme.border}`, cursor:'pointer' }} />
+                ))}
+              </div>
+            )}
             {/* 스티커 배경 색 (sticky 선택 시) */}
             {tool === 'sticky' && (
-              <div style={{ display:'flex', gap:'4px', alignItems:'center', borderLeft:'1px solid #e5e7eb', paddingLeft:'8px' }}>
+              <div style={{ display:'flex', gap:'4px', alignItems:'center', borderLeft:`1px solid ${theme.border}`, paddingLeft:'8px' }}>
                 {STICKY_COLORS.map(c => (
                   <button key={c} onClick={() => setStickyBg(c)}
                     style={{ width:'20px', height:'20px', borderRadius:'4px', backgroundColor:c, border: stickyBg===c ? '2px solid #3b82f6' : '1px solid #d1d5db', cursor:'pointer' }} />
@@ -1015,24 +1093,24 @@ export default function Board() {
           </div>
 
           {/* 굵기 */}
-          <div style={{ display:'flex', alignItems:'center', gap:'8px', borderRight:'2px solid #e5e7eb', paddingRight:'12px' }}>
-            <span style={{ fontSize:'11px', color:'#6b7280', whiteSpace:'nowrap' }}>{tool==='text' ? '크기' : '굵기'}</span>
+          <div style={{ display:'flex', alignItems:'center', gap:'8px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
+            <span style={{ fontSize:'11px', color:theme.textMuted, whiteSpace:'nowrap' }}>{tool==='text' ? '크기' : '굵기'}</span>
             <input type="range" min="1" max="50" value={strokeWidth} onChange={(e) => setStrokeWidth(Number(e.target.value))} style={{ width:'70px' }} />
-            <span style={{ fontSize:'11px', color:'#9ca3af', minWidth:'20px' }}>{tool==='text' ? Math.max(12,strokeWidth*3) : strokeWidth}</span>
+            <span style={{ fontSize:'11px', color:theme.textSubtle, minWidth:'20px' }}>{tool==='text' ? Math.max(12,strokeWidth*3) : strokeWidth}</span>
           </div>
 
           {/* 선 스타일 */}
-          <div style={{ display:'flex', gap:'4px', alignItems:'center', borderRight:'2px solid #e5e7eb', paddingRight:'12px' }}>
+          <div style={{ display:'flex', gap:'4px', alignItems:'center', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
             <button style={dashBtn(currentDash==='solid')} onClick={() => setCurrentDash('solid')} title="실선">—</button>
             <button style={dashBtn(currentDash==='dashed')} onClick={() => setCurrentDash('dashed')} title="파선">- -</button>
             <button style={dashBtn(currentDash==='dotted')} onClick={() => setCurrentDash('dotted')} title="점선">···</button>
           </div>
 
           {/* 투명도 */}
-          <div style={{ display:'flex', alignItems:'center', gap:'6px', borderRight:'2px solid #e5e7eb', paddingRight:'12px' }}>
-            <span style={{ fontSize:'11px', color:'#6b7280' }}>투명도</span>
+          <div style={{ display:'flex', alignItems:'center', gap:'6px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
+            <span style={{ fontSize:'11px', color:theme.textMuted }}>투명도</span>
             <input type="range" min="10" max="100" value={Math.round(currentOpacity*100)} onChange={(e) => setCurrentOpacity(Number(e.target.value)/100)} style={{ width:'60px' }} />
-            <span style={{ fontSize:'11px', color:'#9ca3af', minWidth:'28px' }}>{Math.round(currentOpacity*100)}%</span>
+            <span style={{ fontSize:'11px', color:theme.textSubtle, minWidth:'28px' }}>{Math.round(currentOpacity*100)}%</span>
           </div>
 
           {/* 액션 버튼 */}
@@ -1047,6 +1125,9 @@ export default function Board() {
             <button onClick={() => imageInputRef.current?.click()} title="이미지 삽입" style={iconBtn}><ImageIcon size={22}/></button>
             <button onClick={handleClearAll} title="전체 지우기" style={{ ...iconBtn, color:'#ef4444' }}><Trash2 size={22}/></button>
             <button onClick={() => setShowHelp(v => !v)} title="단축키 도움말 (?)" style={iconBtn}><HelpCircle size={22}/></button>
+            <button onClick={() => setIsDarkMode(v => !v)} title={isDarkMode ? '라이트 모드' : '다크 모드'} style={{ ...iconBtn, color: isDarkMode ? '#f59e0b' : '#6b7280' }}>
+              {isDarkMode ? <Sun size={22}/> : <Moon size={22}/>}
+            </button>
           </div>
 
           <input ref={importInputRef} type="file" accept=".json" onChange={handleImportJSON} style={{ display:'none' }} />
@@ -1055,41 +1136,41 @@ export default function Board() {
       </div>
 
       {/* 줌 인디케이터 */}
-      <div style={{ position:'absolute', bottom:'20px', left:'50%', transform:'translateX(-50%)', zIndex:10, display:'flex', alignItems:'center', gap:'8px', padding:'6px 14px', backgroundColor:'white', borderRadius:'20px', boxShadow:'0 2px 4px rgba(0,0,0,0.1)', fontSize:'13px', color:'#6b7280' }}>
+      <div style={{ position:'absolute', bottom:'20px', left:'50%', transform:'translateX(-50%)', zIndex:10, display:'flex', alignItems:'center', gap:'8px', padding:'6px 14px', backgroundColor: theme.panel, borderRadius:'20px', boxShadow: theme.shadow, fontSize:'13px', color: theme.textMuted }}>
         <button onClick={() => { const ns = Math.max(stageScale/1.2, 0.05); setStageScale(ns); }} title="축소" style={{ ...iconBtn, padding:'0' }}><ZoomOut size={16}/></button>
-        <span style={{ minWidth:'44px', textAlign:'center', fontWeight:'bold' }}>{Math.round(stageScale*100)}%</span>
+        <span style={{ minWidth:'44px', textAlign:'center', fontWeight:'bold', color: theme.text }}>{Math.round(stageScale*100)}%</span>
         <button onClick={() => { const ns = Math.min(stageScale*1.2, 10); setStageScale(ns); }} title="확대" style={{ ...iconBtn, padding:'0' }}><ZoomIn size={16}/></button>
-        <span style={{ width:'1px', height:'14px', backgroundColor:'#e5e7eb' }} />
+        <span style={{ width:'1px', height:'14px', backgroundColor: theme.border }} />
         <button onClick={() => { setStageScale(1); setStagePos({x:0,y:0}); }} title="리셋 (Ctrl+0)" style={{ ...iconBtn, fontSize:'11px', padding:'0' }}>100%</button>
       </div>
 
       {/* 레이어 관리 패널 (선택 시) */}
       {selectedIndices.size > 0 && (
-        <div style={{ position:'absolute', bottom:'70px', left:'50%', transform:'translateX(-50%)', zIndex:10, display:'flex', gap:'4px', padding:'8px 14px', backgroundColor:'white', borderRadius:'12px', boxShadow:'0 4px 6px rgba(0,0,0,0.1)', alignItems:'center' }}>
+        <div style={{ position:'absolute', bottom:'70px', left:'50%', transform:'translateX(-50%)', zIndex:10, display:'flex', gap:'4px', padding:'8px 14px', backgroundColor: theme.panel, borderRadius:'12px', boxShadow: theme.shadow, alignItems:'center' }}>
           {selectedIndices.size === 1 && (
             <>
-              <span style={{ fontSize:'11px', color:'#9ca3af', marginRight:'6px' }}>레이어</span>
+              <span style={{ fontSize:'11px', color: theme.textSubtle, marginRight:'6px' }}>레이어</span>
               <button onClick={sendToBack} title="맨 뒤로" style={layerBtn(singleIdx===0)}><ChevronsDown size={18}/></button>
               <button onClick={moveBackward} title="뒤로" style={layerBtn(singleIdx===0)}><ChevronDown size={18}/></button>
               <button onClick={moveForward} title="앞으로" style={layerBtn(singleIdx===elements.length-1)}><ChevronUp size={18}/></button>
               <button onClick={bringToFront} title="맨 앞으로" style={layerBtn(singleIdx===elements.length-1)}><ChevronsUp size={18}/></button>
               <button onClick={copySelected} title="복사 (Ctrl+C)" style={{ ...layerBtn(), marginLeft:'4px' }}><Copy size={18}/></button>
-              <span style={{ width:'1px', height:'20px', backgroundColor:'#e5e7eb', margin:'0 4px' }} />
+              <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
             </>
           )}
           {selectedIndices.size >= 2 && (
             <>
-              <span style={{ fontSize:'11px', color:'#9ca3af', marginRight:'4px' }}>정렬</span>
+              <span style={{ fontSize:'11px', color: theme.textSubtle, marginRight:'4px' }}>정렬</span>
               <button onClick={() => alignElements('left')} title="왼쪽 정렬" style={layerBtn()}><AlignLeft size={18}/></button>
               <button onClick={() => alignElements('centerH')} title="가운데(수평) 정렬" style={layerBtn()}><AlignCenter size={18}/></button>
               <button onClick={() => alignElements('right')} title="오른쪽 정렬" style={layerBtn()}><AlignRight size={18}/></button>
               <button onClick={() => alignElements('top')} title="위 정렬" style={layerBtn()}><AlignStartVertical size={18}/></button>
               <button onClick={() => alignElements('middleV')} title="중간(수직) 정렬" style={layerBtn()}><AlignCenterVertical size={18}/></button>
               <button onClick={() => alignElements('bottom')} title="아래 정렬" style={layerBtn()}><AlignEndVertical size={18}/></button>
-              <span style={{ width:'1px', height:'20px', backgroundColor:'#e5e7eb', margin:'0 4px' }} />
+              <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
             </>
           )}
-          <span style={{ fontSize:'11px', color:'#9ca3af', marginRight:'4px' }}>
+          <span style={{ fontSize:'11px', color: theme.textSubtle, marginRight:'4px' }}>
             {selectedIndices.size}개 선택
           </span>
           <button
@@ -1104,48 +1185,48 @@ export default function Board() {
       )}
 
       {/* 접속자 목록 */}
-      <div style={{ position:'absolute', top:'20px', right:'20px', zIndex:10, backgroundColor:'white', padding:'14px', borderRadius:'12px', boxShadow:'0 4px 6px rgba(0,0,0,0.1)', width:'150px' }}>
-        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', fontSize:'14px', fontWeight:'bold', color:'#374151' }}>
+      <div style={{ position:'absolute', top:'20px', right:'20px', zIndex:10, backgroundColor: theme.panel, padding:'14px', borderRadius:'12px', boxShadow: theme.shadow, width:'150px' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', fontSize:'14px', fontWeight:'bold', color: theme.text }}>
           <Users size={18}/> 온라인 ({users.length})
         </div>
         {users.map((u, i) => (
-          <div key={i} style={{ fontSize:'13px', color:'#4b5563', display:'flex', alignItems:'center', gap:'5px', marginBottom:'4px' }}>
+          <div key={i} style={{ fontSize:'13px', color: theme.textMuted, display:'flex', alignItems:'center', gap:'5px', marginBottom:'4px' }}>
             <div style={{ width:'6px', height:'6px', borderRadius:'50%', backgroundColor:'#22c55e' }}/> {u}
           </div>
         ))}
       </div>
 
       {/* 채팅창 */}
-      <div style={{ position:'absolute', bottom:'20px', right:'20px', zIndex:10, width:'280px', backgroundColor:'white', borderRadius:'12px', boxShadow:'0 4px 15px rgba(0,0,0,0.1)', display:'flex', flexDirection:'column' }}>
-        <div style={{ padding:'12px', borderBottom:isChatOpen?'1px solid #e5e7eb':'none', fontWeight:'bold', display:'flex', alignItems:'center', gap:'8px', cursor:'pointer' }} onClick={() => setIsChatOpen(v => !v)}>
+      <div style={{ position:'absolute', bottom:'20px', right:'20px', zIndex:10, width:'280px', backgroundColor: theme.panel, borderRadius:'12px', boxShadow: theme.shadow, display:'flex', flexDirection:'column' }}>
+        <div style={{ padding:'12px', borderBottom:isChatOpen?`1px solid ${theme.border}`:'none', fontWeight:'bold', display:'flex', alignItems:'center', gap:'8px', cursor:'pointer', color: theme.text }} onClick={() => setIsChatOpen(v => !v)}>
           <MessageSquare size={18}/>
           <span style={{ flex:1 }}>채팅 {messages.length>0 && !isChatOpen && <span style={{ fontSize:'11px', backgroundColor:'#3b82f6', color:'white', borderRadius:'10px', padding:'1px 6px' }}>{messages.length}</span>}</span>
-          <ChevronDown size={16} style={{ color:'#9ca3af', transform:isChatOpen?'rotate(0deg)':'rotate(-90deg)', transition:'transform 0.2s' }}/>
+          <ChevronDown size={16} style={{ color: theme.textSubtle, transform:isChatOpen?'rotate(0deg)':'rotate(-90deg)', transition:'transform 0.2s' }}/>
         </div>
         {isChatOpen && (
           <>
             <div style={{ height:'240px', padding:'10px', overflowY:'auto', display:'flex', flexDirection:'column', gap:'8px' }}>
               {messages.map((msg, i) => (
                 <div key={i} style={{ alignSelf:msg.sender===nickname?'flex-end':'flex-start', maxWidth:'85%' }}>
-                  <div style={{ fontSize:'10px', color:'#9ca3af', textAlign:msg.sender===nickname?'right':'left' }}>{msg.sender}</div>
-                  <div style={{ padding:'6px 10px', borderRadius:'10px', fontSize:'13px', backgroundColor:msg.sender===nickname?'#3b82f6':'#f3f4f6', color:msg.sender===nickname?'white':'#374151' }}>{msg.text}</div>
+                  <div style={{ fontSize:'10px', color: theme.textSubtle, textAlign:msg.sender===nickname?'right':'left' }}>{msg.sender}</div>
+                  <div style={{ padding:'6px 10px', borderRadius:'10px', fontSize:'13px', backgroundColor:msg.sender===nickname ? theme.chatBubbleSelf : theme.chatBubbleOther, color:msg.sender===nickname?'white': theme.chatTextOther }}>{msg.text}</div>
                 </div>
               ))}
               <div ref={chatEndRef}/>
             </div>
             {typingUsers.length > 0 && (
-              <div style={{ padding:'4px 12px', fontSize:'11px', color:'#9ca3af', fontStyle:'italic' }}>
+              <div style={{ padding:'4px 12px', fontSize:'11px', color: theme.textSubtle, fontStyle:'italic' }}>
                 {typingUsers.join(', ')}이(가) 입력 중...
               </div>
             )}
-            <div style={{ padding:'10px', borderTop:'1px solid #e5e7eb', display:'flex', gap:'5px' }}>
+            <div style={{ padding:'10px', borderTop:`1px solid ${theme.border}`, display:'flex', gap:'5px' }}>
               <input type="text" value={inputText} onChange={(e) => {
                 setInputText(e.target.value);
                 socket.emit('typing', nickname);
                 if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
                 typingTimerRef.current = setTimeout(() => socket.emit('stop_typing', nickname), 1500);
               }} onKeyDown={(e) => e.key==='Enter' && handleSendMessage()} placeholder="메시지..."
-                style={{ flex:1, padding:'6px', borderRadius:'4px', border:'1px solid #d1d5db', fontSize:'13px' }} />
+                style={{ flex:1, padding:'6px', borderRadius:'4px', border:`1px solid ${theme.inputBorder}`, fontSize:'13px', backgroundColor: theme.inputBg, color: theme.text }} />
               <button onClick={handleSendMessage} style={{ padding:'6px', backgroundColor:'#3b82f6', color:'white', border:'none', borderRadius:'4px', cursor:'pointer' }}><Send size={16}/></button>
             </div>
           </>
@@ -1178,28 +1259,42 @@ export default function Board() {
             position:'absolute', left:textAreaScreen.x, top:textAreaScreen.y, zIndex:20,
             background:'transparent', border:'1px dashed #3b82f6', outline:'none',
             resize:'none', overflow:'hidden', minWidth:'120px',
-            minHeight:`${Math.max(12,strokeWidth*3)*stageScale+10}px`,
-            fontSize:`${Math.max(12,strokeWidth*3)*stageScale}px`,
+            minHeight:`${(textInput.targetIdx !== undefined && elements[textInput.targetIdx]?.tool === 'text' ? (elements[textInput.targetIdx].fontSize ?? 20) : Math.max(12,strokeWidth*3))*stageScale+10}px`,
+            fontSize:`${(textInput.targetIdx !== undefined && elements[textInput.targetIdx]?.tool === 'text' ? (elements[textInput.targetIdx].fontSize ?? 20) : Math.max(12,strokeWidth*3))*stageScale}px`,
             fontFamily:'sans-serif', color:currentColor, lineHeight:'1.4',
             padding:'2px 4px', caretColor:currentColor,
           }} rows={1}/>
       )}
 
+      {/* 토스트 알림 */}
+      <div style={{ position:'fixed', bottom:'80px', left:'20px', zIndex:200, display:'flex', flexDirection:'column', gap:'8px', pointerEvents:'none' }}>
+        {toasts.map(toast => (
+          <div key={toast.id} style={{
+            padding:'10px 16px', borderRadius:'8px', fontSize:'13px', fontWeight:'500',
+            backgroundColor: toast.type === 'join' ? '#22c55e' : toast.type === 'leave' ? '#ef4444' : '#3b82f6',
+            color:'white', boxShadow:'0 4px 12px rgba(0,0,0,0.2)',
+            animation:'slideIn 0.3s ease',
+          }}>
+            {toast.type === 'join' ? '🟢' : toast.type === 'leave' ? '🔴' : 'ℹ️'} {toast.message}
+          </div>
+        ))}
+      </div>
+
       {/* 단축키 도움말 모달 */}
       {showHelp && (
         <div style={{ position:'fixed', inset:0, backgroundColor:'rgba(0,0,0,0.5)', zIndex:100, display:'flex', alignItems:'center', justifyContent:'center' }}
           onClick={() => setShowHelp(false)}>
-          <div style={{ backgroundColor:'white', borderRadius:'12px', padding:'28px', maxWidth:'480px', width:'90%', maxHeight:'80vh', overflowY:'auto' }}
+          <div style={{ backgroundColor: theme.panel, borderRadius:'12px', padding:'28px', maxWidth:'480px', width:'90%', maxHeight:'80vh', overflowY:'auto' }}
             onClick={(e) => e.stopPropagation()}>
-            <h2 style={{ margin:'0 0 16px', fontSize:'18px', color:'#111827' }}>⌨️ 키보드 단축키</h2>
+            <h2 style={{ margin:'0 0 16px', fontSize:'18px', color: theme.text }}>⌨️ 키보드 단축키</h2>
             <table style={{ width:'100%', borderCollapse:'collapse' }}>
               <tbody>
                 {SHORTCUTS.map(([key, desc]) => (
-                  <tr key={key} style={{ borderBottom:'1px solid #f3f4f6' }}>
+                  <tr key={key} style={{ borderBottom:`1px solid ${theme.border}` }}>
                     <td style={{ padding:'7px 0', width:'160px' }}>
-                      <code style={{ backgroundColor:'#f3f4f6', padding:'2px 8px', borderRadius:'4px', fontSize:'13px', color:'#374151' }}>{key}</code>
+                      <code style={{ backgroundColor: isDarkMode ? '#374151' : '#f3f4f6', padding:'2px 8px', borderRadius:'4px', fontSize:'13px', color: theme.text }}>{key}</code>
                     </td>
-                    <td style={{ padding:'7px 0', fontSize:'14px', color:'#4b5563' }}>{desc}</td>
+                    <td style={{ padding:'7px 0', fontSize:'14px', color: theme.textMuted }}>{desc}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1221,6 +1316,7 @@ export default function Board() {
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
+        onDblClick={handleDblClick}
         style={{ cursor: getCursor() }}
       >
         <Layer>

@@ -25,6 +25,7 @@ io.on('connection', (socket) => {
   socket.on('set_nickname', (nickname) => {
     users[socket.id] = nickname;
     io.emit('user_list', Object.values(users));
+    socket.broadcast.emit('user_joined', nickname);
   });
 
   // 드로잉
@@ -62,9 +63,11 @@ io.on('connection', (socket) => {
 
   // 연결 해제
   socket.on('disconnect', () => {
+    const leftNickname = users[socket.id];
     delete users[socket.id];
     io.emit('user_list', Object.values(users));
     io.emit('cursor_leave', socket.id); // 커서 제거 알림
+    if (leftNickname) socket.broadcast.emit('user_left', leftNickname);
   });
 });
 
