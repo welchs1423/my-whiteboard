@@ -7,12 +7,14 @@ import {
   MousePointer, ChevronsUp, ChevronUp, ChevronsDown, FileJson, Upload,
   HelpCircle, ImageIcon, StickyNote, ZoomIn, ZoomOut, Copy,
   AlignLeft, AlignCenter, AlignRight, AlignStartVertical, AlignCenterVertical, AlignEndVertical,
-  Lock, Unlock, Magnet, Sun, Moon, Triangle, Maximize2,
+  Lock, Unlock, Magnet, Sun, Moon, Triangle, Maximize2, Spline, Wand2,
+  Group as GroupIcon, Ungroup as UngroupIcon,
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import type { DrawElement, ToolType, DashStyle, Bounds } from '../utils/elementHelpers';
 import {
   generateId, getElementBounds, getElementAtPoint, getElementsInRect, moveElementBy, getDashArray,
+  smoothPoints, simplifyPoints, detectSmartShape,
 } from '../utils/elementHelpers';
 
 const socket = io('http://localhost:3001');
@@ -51,6 +53,8 @@ const SHORTCUTS = [
   ['A', '화살표'],
   ['N', '스티커 메모'],
   ['Ctrl+A', '전체 선택'],
+  ['Ctrl+G', '선택 요소 그룹화'],
+  ['Ctrl+Shift+G', '그룹 해제'],
   ['Ctrl+D', '선택 복제 (+20px)'],
   ['Ctrl+Z', '실행 취소'],
   ['Ctrl+Y', '다시 실행'],
@@ -81,7 +85,7 @@ export default function Board() {
   const [users, setUsers] = useState<UserInfo[]>([]);
   // 협업 기능
   const [followingUserId, setFollowingUserId] = useState<string | null>(null);
-  const [userViewports, setUserViewports] = useState<Record<string, UserViewport>>({});
+  const [, setUserViewports] = useState<Record<string, UserViewport>>({});
   const [emojiReactions, setEmojiReactions] = useState<EmojiReaction[]>([]);
   const [isEmojiMode, setIsEmojiMode] = useState(false);
   const [selectedEmoji, setSelectedEmoji] = useState('👍');
@@ -118,6 +122,9 @@ export default function Board() {
   const [recentColors, setRecentColors] = useState<string[]>([]);
   // 토스트 알림
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // 펜 옵션
+  const [isSmoothing, setIsSmoothing] = useState(false);
+  const [isSmartShape, setIsSmartShape] = useState(false);
 
   // ── Refs ──
   const isDrawing = useRef(false);
@@ -128,6 +135,8 @@ export default function Board() {
   const imageInputRef = useRef<HTMLInputElement>(null);
   const lastCursorEmit = useRef(0);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isSmoothingRef = useRef(false);
+  const isSmartShapeRef = useRef(false);
   const historyRef = useRef<DrawElement[][]>([[]]);
   const historyStepRef = useRef(0);
   const isDraggingSelected = useRef(false);
@@ -193,6 +202,8 @@ export default function Board() {
   spaceHeldRef.current = isSpaceHeld;
   isSnapEnabledRef.current = isSnapEnabled;
   followingUserRef.current = followingUserId;
+  isSmoothingRef.current = isSmoothing;
+  isSmartShapeRef.current = isSmartShape;
 
   // ── 좌표 변환 ──
 
@@ -341,6 +352,31 @@ export default function Board() {
       selectedIndicesRef.current.has(i) ? { ...el, locked: !allLocked } : el
     );
     setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
+  };
+
+  // ── 그룹화 / 해제 ──
+
+  const handleGroup = () => {
+    const idxs = [...selectedIndicesRef.current];
+    if (idxs.length < 2) return;
+    const newGroupId = generateId();
+    const upd = elementsRef.current.map((el, i) =>
+      selectedIndicesRef.current.has(i) ? { ...el, groupId: newGroupId } : el
+    );
+    setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
+    showToast(`${idxs.length}개 요소가 그룹화되었습니다`);
+  };
+
+  const handleUngroup = () => {
+    const idxs = [...selectedIndicesRef.current];
+    if (idxs.length === 0) return;
+    // 선택된 요소들의 groupId를 가진 모든 요소를 함께 해제
+    const groupIds = new Set(idxs.map(i => elementsRef.current[i]?.groupId).filter(Boolean));
+    const upd = elementsRef.current.map((el) =>
+      (el.groupId && groupIds.has(el.groupId)) ? { ...el, groupId: undefined } : el
+    );
+    setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
+    showToast('그룹이 해제되었습니다');
   };
 
   // ── 내보내기 / 가져오기 ──
@@ -541,6 +577,11 @@ export default function Board() {
       if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
         e.preventDefault();
         setSelectedIndices(new Set(elementsRef.current.map((_, i) => i)));
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
+        e.preventDefault();
+        if (e.shiftKey) { handleUngroup(); } else { handleGroup(); }
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 'd') {
@@ -802,13 +843,27 @@ export default function Board() {
             return next;
           });
         } else {
-          const newSel = selectedIndices.has(idx) ? selectedIndices : new Set([idx]);
+          // 그룹 소속 여부 확인: 그룹이면 전체 그룹 선택
+          let baseIdx = idx;
+          let newSel: Set<number>;
+          if (selectedIndices.has(idx)) {
+            newSel = selectedIndices;
+          } else {
+            newSel = new Set([idx]);
+            const clickedGroupId = elements[idx]?.groupId;
+            if (clickedGroupId) {
+              elements.forEach((el, i) => {
+                if (el.groupId === clickedGroupId) newSel.add(i);
+              });
+            }
+            baseIdx = idx;
+          }
           setSelectedIndices(newSel);
           // 드래그 준비
           isDraggingSelected.current = true;
           dragStartPos.current = pos;
-          const sel = selectedIndices.has(idx) ? selectedIndices : new Set([idx]);
-          dragOriginals.current = [...sel].filter(i => !elements[i]?.locked).map((i) => ({
+          void baseIdx;
+          dragOriginals.current = [...newSel].filter(i => !elements[i]?.locked).map((i) => ({
             idx: i,
             el: { ...elements[i], points: [...elements[i].points] },
           }));
@@ -927,7 +982,39 @@ export default function Board() {
       return;
     }
 
-    setElements((latest) => { saveHistoryWith(latest); return latest; });
+    setElements((latest) => {
+      if (latest.length === 0) { saveHistoryWith(latest); return latest; }
+      const last = latest[latest.length - 1];
+
+      // 펜 도구일 때 스무딩 / 도형 자동 인식 적용
+      if (last.tool === 'pen' && (isSmartShapeRef.current || isSmoothingRef.current)) {
+        const upd = [...latest];
+
+        if (isSmartShapeRef.current) {
+          const detected = detectSmartShape(last);
+          if (detected) {
+            upd[upd.length - 1] = detected;
+            saveHistoryWith(upd);
+            socket.emit('draw_line', upd);
+            setTimeout(() => showToast('도형이 자동 인식되었습니다 ✨', 'info'), 0);
+            return upd;
+          }
+        }
+
+        if (isSmoothingRef.current && last.points.length > 6) {
+          const simplified = simplifyPoints(last.points, 3);
+          const smoothed = smoothPoints(simplified, 3);
+          upd[upd.length - 1] = { ...last, points: smoothed };
+        }
+
+        saveHistoryWith(upd);
+        socket.emit('draw_line', upd);
+        return upd;
+      }
+
+      saveHistoryWith(latest);
+      return latest;
+    });
   };
 
   // ── 텍스트/스티커 더블클릭 편집 ──
@@ -1076,6 +1163,34 @@ export default function Board() {
     );
   });
 
+  // 그룹 바운딩 박스 렌더링 (그룹 소속 요소들의 합산 경계)
+  const groupBoundsMap = new Map<string, Bounds>();
+  [...selectedIndices].forEach((idx) => {
+    if (idx >= elements.length) return;
+    const el = elements[idx];
+    if (!el.groupId) return;
+    const b = getElementBounds(el);
+    if (!b) return;
+    const ex = groupBoundsMap.get(el.groupId);
+    if (ex) {
+      const nx = Math.min(ex.x, b.x), ny = Math.min(ex.y, b.y);
+      groupBoundsMap.set(el.groupId, {
+        x: nx, y: ny,
+        width: Math.max(ex.x + ex.width, b.x + b.width) - nx,
+        height: Math.max(ex.y + ex.height, b.y + b.height) - ny,
+      });
+    } else {
+      groupBoundsMap.set(el.groupId, { ...b });
+    }
+  });
+  const groupRects = [...groupBoundsMap.entries()].map(([gid, b]) => (
+    <Rect key={`group-${gid}`}
+      x={b.x - 10} y={b.y - 10} width={b.width + 20} height={b.height + 20}
+      stroke="#f59e0b" strokeWidth={2 / stageScale}
+      dash={[8 / stageScale, 4 / stageScale]}
+      fill="rgba(245,158,11,0.04)" listening={false} cornerRadius={4} />
+  ));
+
   // 텍스트 입력 화면 좌표
   const textAreaScreen = textInput ? canvasToScreen(textInput.x, textInput.y) : null;
 
@@ -1143,6 +1258,27 @@ export default function Board() {
 
       {/* ── 상단 도구 모음 ── */}
       <div style={{ position:'absolute', top:'16px', left:'50%', transform:'translateX(-50%)', zIndex:10, display:'flex', flexDirection:'column', gap:'6px', alignItems:'center' }}>
+        {/* 펜 도구 세부 옵션 (펜 선택 시) */}
+        {tool === 'pen' && !isViewOnly && (
+          <div style={{ display:'flex', gap:'8px', padding:'5px 14px', backgroundColor: theme.panel, borderRadius:'10px', boxShadow: theme.shadow, alignItems:'center' }}>
+            <span style={{ fontSize:'11px', color: theme.textMuted }}>펜 옵션</span>
+            <button
+              onClick={() => setIsSmoothing(v => !v)}
+              title="선 매끄럽게 처리 (Smoothing) — 그린 후 자동 보정"
+              style={{ display:'flex', alignItems:'center', gap:'4px', padding:'3px 8px', borderRadius:'6px', cursor:'pointer', border: isSmoothing ? '2px solid #3b82f6' : `1px solid ${theme.border}`, background: isSmoothing ? '#eff6ff' : 'none', color: isSmoothing ? '#3b82f6' : theme.textMuted, fontSize:'12px' }}
+            >
+              <Spline size={15}/> 스무딩
+            </button>
+            <button
+              onClick={() => setIsSmartShape(v => !v)}
+              title="도형 자동 인식 (Smart Shape) — 원/삼각형 자동 변환"
+              style={{ display:'flex', alignItems:'center', gap:'4px', padding:'3px 8px', borderRadius:'6px', cursor:'pointer', border: isSmartShape ? '2px solid #8b5cf6' : `1px solid ${theme.border}`, background: isSmartShape ? '#f5f3ff' : 'none', color: isSmartShape ? '#8b5cf6' : theme.textMuted, fontSize:'12px' }}
+            >
+              <Wand2 size={15}/> 스마트 도형
+            </button>
+          </div>
+        )}
+
         {/* 1행: 도구 */}
         <div style={{ display:'flex', gap:'12px', padding:'8px 16px', backgroundColor: theme.panel, borderRadius:'12px', boxShadow: theme.shadow, alignItems:'center' }}>
 
@@ -1329,7 +1465,11 @@ export default function Board() {
               <button onClick={() => alignElements('middleV')} title="중간(수직) 정렬" style={layerBtn()}><AlignCenterVertical size={18}/></button>
               <button onClick={() => alignElements('bottom')} title="아래 정렬" style={layerBtn()}><AlignEndVertical size={18}/></button>
               <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
+              <button onClick={handleGroup} title="그룹화 (Ctrl+G)" style={{ ...layerBtn(), color:'#f59e0b' }}><GroupIcon size={18}/></button>
             </>
+          )}
+          {[...selectedIndices].some(i => elements[i]?.groupId) && (
+            <button onClick={handleUngroup} title="그룹 해제 (Ctrl+Shift+G)" style={{ ...layerBtn(), color:'#f59e0b' }}><UngroupIcon size={18}/></button>
           )}
           <span style={{ fontSize:'11px', color: theme.textSubtle, marginRight:'4px' }}>
             {selectedIndices.size}개 선택
@@ -1514,6 +1654,8 @@ export default function Board() {
           {elements.map(renderElement)}
           {/* 선택 박스 오버레이 */}
           {selectionRects}
+          {/* 그룹 바운딩 박스 */}
+          {groupRects}
           {/* 박스 선택 중 영역 표시 */}
           {boxSelectRect && (
             <Rect

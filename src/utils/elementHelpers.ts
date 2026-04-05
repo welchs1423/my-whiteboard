@@ -20,6 +20,7 @@ export interface DrawElement {
   stickyBg?: string;
   imageDataUrl?: string;
   locked?: boolean;
+  groupId?: string;
 }
 
 export interface Bounds {
@@ -121,4 +122,107 @@ export function getElementsInRect(
 /** 엘리먼트를 dx, dy만큼 이동 */
 export function moveElementBy(el: DrawElement, dx: number, dy: number): DrawElement {
   return { ...el, points: el.points.map((p, i) => (i % 2 === 0 ? p + dx : p + dy)) };
+}
+
+// ── 선 매끄럽게 처리 ──────────────────────────────────────────────────────────
+
+/** Douglas-Peucker 점 단순화 (내부 재귀) */
+function dpRecurse(pts: [number, number][], epsilon: number): [number, number][] {
+  if (pts.length < 3) return pts;
+  let maxDist = 0, maxIdx = 1;
+  const [x1, y1] = pts[0];
+  const [x2, y2] = pts[pts.length - 1];
+  const dx = x2 - x1, dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [px, py] = pts[i];
+    const d = lenSq === 0
+      ? Math.sqrt((px - x1) ** 2 + (py - y1) ** 2)
+      : Math.abs(dy * px - dx * py + x2 * y1 - y2 * x1) / Math.sqrt(lenSq);
+    if (d > maxDist) { maxDist = d; maxIdx = i; }
+  }
+  if (maxDist > epsilon) {
+    const left = dpRecurse(pts.slice(0, maxIdx + 1), epsilon);
+    const right = dpRecurse(pts.slice(maxIdx), epsilon);
+    return [...left.slice(0, -1), ...right];
+  }
+  return [pts[0], pts[pts.length - 1]];
+}
+
+/** Douglas-Peucker 점 단순화 */
+export function simplifyPoints(points: number[], epsilon: number): number[] {
+  if (points.length < 6) return points;
+  const pts: [number, number][] = [];
+  for (let i = 0; i < points.length; i += 2) pts.push([points[i], points[i + 1]]);
+  return dpRecurse(pts, epsilon).flatMap(p => p);
+}
+
+/** Chaikin 알고리즘으로 선 매끄럽게 처리 */
+export function smoothPoints(points: number[], iterations = 3): number[] {
+  if (points.length < 6) return points;
+  let pts = [...points];
+  for (let iter = 0; iter < iterations; iter++) {
+    const newPts: number[] = [pts[0], pts[1]];
+    for (let i = 0; i < pts.length - 2; i += 2) {
+      const x1 = pts[i], y1 = pts[i + 1];
+      const x2 = pts[i + 2], y2 = pts[i + 3];
+      newPts.push(0.75 * x1 + 0.25 * x2, 0.75 * y1 + 0.25 * y2);
+      newPts.push(0.25 * x1 + 0.75 * x2, 0.25 * y1 + 0.75 * y2);
+    }
+    newPts.push(pts[pts.length - 2], pts[pts.length - 1]);
+    pts = newPts;
+  }
+  return pts;
+}
+
+// ── 도형 자동 인식 ────────────────────────────────────────────────────────────
+
+/** 펜 획에서 원 또는 삼각형을 자동 인식하여 도형 엘리먼트로 변환 */
+export function detectSmartShape(el: DrawElement): DrawElement | null {
+  const { points } = el;
+  if (points.length < 16) return null; // 최소 8개 점 필요
+
+  const pts: [number, number][] = [];
+  for (let i = 0; i < points.length; i += 2) pts.push([points[i], points[i + 1]]);
+
+  // 바운딩 박스
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  pts.forEach(([x, y]) => {
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+  });
+  const scale = Math.max(maxX - minX, maxY - minY);
+  if (scale < 30) return null; // 너무 작은 획 무시
+
+  // 닫힌 경로 여부 확인
+  const closeDist = Math.sqrt(
+    (pts[0][0] - pts[pts.length - 1][0]) ** 2 +
+    (pts[0][1] - pts[pts.length - 1][1]) ** 2
+  );
+  if (closeDist > scale * 0.4) return null; // 열린 경로는 무시
+
+  // ── 원 감지: 중심에서 모든 점의 거리가 일정한지 확인 ──
+  const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+  const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+  const dists = pts.map(p => Math.sqrt((p[0] - cx) ** 2 + (p[1] - cy) ** 2));
+  const avgR = dists.reduce((s, d) => s + d, 0) / dists.length;
+  const variance = dists.reduce((s, d) => s + (d - avgR) ** 2, 0) / dists.length;
+  const cv = Math.sqrt(variance) / avgR; // 변동계수 (작을수록 원에 가까움)
+
+  if (cv < 0.22 && avgR > 15) {
+    return { ...el, tool: 'circle', points: [cx - avgR, cy - avgR, cx + avgR, cy + avgR] };
+  }
+
+  // ── 삼각형 감지: Douglas-Peucker로 단순화 후 꼭짓점 수 확인 ──
+  const simplified = dpRecurse(pts, scale * 0.07);
+  // 닫힌 경로이므로 마지막 점이 첫 점과 같으면 제거
+  const last = simplified[simplified.length - 1];
+  const corners = (last[0] === simplified[0][0] && last[1] === simplified[0][1])
+    ? simplified.slice(0, -1) : simplified;
+
+  if (corners.length >= 3 && corners.length <= 4) {
+    return { ...el, tool: 'triangle', points: [minX, minY, maxX, maxY] };
+  }
+
+  return null;
 }
