@@ -61,3 +61,20 @@ React와 Konva.js를 활용한 실시간 협업 화이트보드 토이 프로젝
 - [x] **선 매끄럽게 처리 (Smoothing):** 펜 도구 선택 시 "스무딩" 버튼으로 활성화, 그린 직후 Douglas-Peucker 단순화 → Chaikin 알고리즘으로 자동 보정
 - [x] **도형 자동 인식 (Smart Shape):** 펜으로 원·삼각형을 대충 그리면 자동으로 깔끔한 벡터 도형으로 변환 (닫힌 경로 감지 + 원형도 분석)
 - [x] **그룹화 / 해제 (Group/Ungroup):** 다중 선택 후 Ctrl+G로 그룹화 (주황 점선 박스 표시), 그룹 클릭 시 전체 자동 선택, Ctrl+Shift+G로 해제
+
+## 🗂 Project Structure
+
+```
+src/
+├── components/
+│   ├── Board.tsx          # 메인 보드 컴포넌트 (~1380줄, 리팩터링으로 축소)
+│   ├── LoginScreen.tsx    # 입장 화면
+│   └── HelpModal.tsx      # 단축키 도움말 모달
+├── hooks/
+│   ├── useHistory.ts      # Undo/Redo 히스토리 관리
+│   ├── useSocketEvents.ts # 소켓 이벤트 리스너
+│   └── useKeyboardShortcuts.ts # 전역 키보드 단축키
+└── utils/
+    ├── elementHelpers.ts  # 도형 타입, 좌표 연산 유틸
+    └── renderElement.tsx  # Konva 요소 렌더링 함수
+```

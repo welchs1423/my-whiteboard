@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Stage, Layer, Line, Rect, Ellipse, Text, Arrow, Image as KonvaImage, Group } from 'react-konva';
+import { Stage, Layer, Rect } from 'react-konva';
 import Konva from 'konva';
 import {
   Eraser, Pen, Trash2, Download, Users, MessageSquare, Send, Square, Circle,
@@ -13,9 +13,15 @@ import {
 import { io } from 'socket.io-client';
 import type { DrawElement, ToolType, DashStyle, Bounds } from '../utils/elementHelpers';
 import {
-  generateId, getElementBounds, getElementAtPoint, getElementsInRect, moveElementBy, getDashArray,
+  generateId, getElementBounds, getElementAtPoint, getElementsInRect, moveElementBy,
   smoothPoints, simplifyPoints, detectSmartShape,
 } from '../utils/elementHelpers';
+import { useHistory } from '../hooks/useHistory';
+import { useSocketEvents } from '../hooks/useSocketEvents';
+import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
+import { renderElement } from '../utils/renderElement';
+import LoginScreen from './LoginScreen';
+import HelpModal from './HelpModal';
 
 const socket = io('http://localhost:3001');
 
@@ -40,37 +46,6 @@ const getCursorColor = (id: string) => {
   const hash = id.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
   return CURSOR_COLORS[hash % CURSOR_COLORS.length];
 };
-
-const SHORTCUTS = [
-  ['S', '선택/이동 도구'],
-  ['P', '펜'],
-  ['E', '지우개'],
-  ['R', '사각형'],
-  ['C', '원'],
-  ['V', '삼각형'],
-  ['T', '텍스트'],
-  ['L', '직선'],
-  ['A', '화살표'],
-  ['N', '스티커 메모'],
-  ['Ctrl+A', '전체 선택'],
-  ['Ctrl+G', '선택 요소 그룹화'],
-  ['Ctrl+Shift+G', '그룹 해제'],
-  ['Ctrl+D', '선택 복제 (+20px)'],
-  ['Ctrl+Z', '실행 취소'],
-  ['Ctrl+Y', '다시 실행'],
-  ['Ctrl+C', '선택 복사'],
-  ['Ctrl+V', '붙여넣기'],
-  ['Ctrl+0', '줌 초기화'],
-  ['F', '전체 요소 보기 (줌 맞춤)'],
-  ['↑↓←→', '선택 요소 1px 이동'],
-  ['Shift+↑↓←→', '선택 요소 10px 이동'],
-  ['Space+드래그', '캔버스 이동'],
-  ['마우스 휠', '확대/축소'],
-  ['Delete/Backspace', '선택 삭제'],
-  ['Shift+클릭', '다중 선택'],
-  ['ESC', '선택 해제'],
-  ['?', '단축키 도움말'],
-];
 
 // ── 컴포넌트 ─────────────────────────────────────────────────────────────────
 
@@ -137,8 +112,6 @@ export default function Board() {
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isSmoothingRef = useRef(false);
   const isSmartShapeRef = useRef(false);
-  const historyRef = useRef<DrawElement[][]>([[]]);
-  const historyStepRef = useRef(0);
   const isDraggingSelected = useRef(false);
   const dragStartPos = useRef<{ x: number; y: number } | null>(null);
   const dragOriginals = useRef<{ idx: number; el: DrawElement }[]>([]);
@@ -150,6 +123,10 @@ export default function Board() {
   const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
   // 최신값 ref (useEffect 스테일 클로저 방지)
   const elementsRef = useRef<DrawElement[]>([]);
+  // ── 히스토리 훅 ──
+  const { saveHistoryWith, handleUndo, handleRedo, historyRef, historyStepRef } = useHistory(
+    setElements, setSelectedIndices, socket,
+  );
   const selectedIndicesRef = useRef<Set<number>>(new Set());
   const stagePosRef = useRef({ x: 0, y: 0 });
   const stageScaleRef = useRef(1);
@@ -222,33 +199,6 @@ export default function Board() {
     x: cx * stageScale + stagePos.x,
     y: cy * stageScale + stagePos.y,
   });
-
-  // ── 히스토리 ──
-
-  const saveHistoryWith = (els: DrawElement[]) => {
-    const h = historyRef.current.slice(0, historyStepRef.current + 1);
-    h.push([...els]);
-    historyRef.current = h;
-    historyStepRef.current = h.length - 1;
-  };
-
-  const handleUndo = () => {
-    if (historyStepRef.current <= 0) return;
-    historyStepRef.current--;
-    const prev = historyRef.current[historyStepRef.current];
-    setElements([...prev]);
-    setSelectedIndices(new Set());
-    socket.emit('draw_line', prev);
-  };
-
-  const handleRedo = () => {
-    if (historyStepRef.current >= historyRef.current.length - 1) return;
-    historyStepRef.current++;
-    const next = historyRef.current[historyStepRef.current];
-    setElements([...next]);
-    setSelectedIndices(new Set());
-    socket.emit('draw_line', next);
-  };
 
   // ── 선택 관련 ──
 
@@ -565,141 +515,24 @@ export default function Board() {
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
   }, []);
 
-  // 키보드 단축키
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const active = document.activeElement;
-      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
+  // ── 키보드 단축키 훅 ──
+  useKeyboardShortcuts({
+    socket, elementsRef, selectedIndicesRef, showHelpRef, clipboard,
+    setElements, setSelectedIndices, setTool, setShowHelp,
+    setStageScale, setStagePos,
+    handleUndo, handleRedo, handleZoomToFit, handleGroup, handleUngroup,
+    saveHistoryWith,
+  });
 
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); handleUndo(); return; }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); handleRedo(); return; }
-      if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); setStageScale(1); setStagePos({ x: 0, y: 0 }); return; }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
-        e.preventDefault();
-        setSelectedIndices(new Set(elementsRef.current.map((_, i) => i)));
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
-        e.preventDefault();
-        if (e.shiftKey) { handleUngroup(); } else { handleGroup(); }
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'd') {
-        e.preventDefault();
-        const idxs = [...selectedIndicesRef.current];
-        if (idxs.length === 0) return;
-        const newEls: DrawElement[] = idxs.map(i => ({
-          ...elementsRef.current[i],
-          id: generateId(),
-          points: elementsRef.current[i].points.map(p => p + 20),
-          locked: false,
-        }));
-        const updated = [...elementsRef.current, ...newEls];
-        const newIdxs = new Set(Array.from({ length: newEls.length }, (_, k) => elementsRef.current.length + k));
-        setElements(updated); setSelectedIndices(newIdxs);
-        saveHistoryWith(updated); socket.emit('draw_line', updated);
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-        e.preventDefault();
-        if (selectedIndicesRef.current.size === 1) {
-          const idx = [...selectedIndicesRef.current][0];
-          clipboard.current = { ...elementsRef.current[idx], points: [...elementsRef.current[idx].points] };
-        }
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
-        e.preventDefault();
-        if (!clipboard.current) return;
-        const pasted: DrawElement = { ...clipboard.current, id: generateId(), points: clipboard.current.points.map((p) => p + 20) };
-        const updated = [...elementsRef.current, pasted];
-        setElements(updated);
-        setSelectedIndices(new Set([updated.length - 1]));
-        saveHistoryWith(updated);
-        socket.emit('draw_line', updated);
-        return;
-      }
-
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIndicesRef.current.size > 0) {
-        e.preventDefault();
-        const idxSet = selectedIndicesRef.current;
-        const updated = elementsRef.current.filter((el, i) => !idxSet.has(i) || el.locked);
-        setElements(updated); setSelectedIndices(new Set());
-        saveHistoryWith(updated); socket.emit('draw_line', updated);
-        return;
-      }
-
-      if (e.key === 'Escape') {
-        if (showHelpRef.current) { setShowHelp(false); return; }
-        setSelectedIndices(new Set()); return;
-      }
-      if (e.key === '?') { setShowHelp((v) => !v); return; }
-
-      if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        if (e.key === 'f' || e.key === 'F') { e.preventDefault(); handleZoomToFit(); return; }
-        const map: Record<string, ToolType> = {
-          p: 'pen', e: 'eraser', r: 'rect', c: 'circle',
-          t: 'text', l: 'straight', a: 'arrow', s: 'select', n: 'sticky', v: 'triangle',
-        };
-        if (map[e.key]) { setTool(map[e.key]); setSelectedIndices(new Set()); }
-      }
-
-      // 화살표 키로 선택 요소 이동
-      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && selectedIndicesRef.current.size > 0) {
-        e.preventDefault();
-        const delta = e.shiftKey ? 10 : 1;
-        const dx = e.key === 'ArrowLeft' ? -delta : e.key === 'ArrowRight' ? delta : 0;
-        const dy = e.key === 'ArrowUp' ? -delta : e.key === 'ArrowDown' ? delta : 0;
-        const upd = elementsRef.current.map((el, i) =>
-          selectedIndicesRef.current.has(i) && !el.locked ? moveElementBy(el, dx, dy) : el
-        );
-        setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
-  // 소켓 이벤트
-  useEffect(() => {
-    socket.on('draw_line', (data: DrawElement[]) => setElements(data));
-    socket.on('clear_all', () => {
-      setElements([]); setSelectedIndices(new Set());
-      historyRef.current = [[]]; historyStepRef.current = 0;
-    });
-    socket.on('user_list', (list: UserInfo[]) => setUsers(list));
-    socket.on('receive_message', (msg: ChatMessage) => setMessages((p) => [...p, msg]));
-    socket.on('cursor_move', (data: CursorData & { id: string }) => {
-      setCursors((p) => ({ ...p, [data.id]: { x: data.x, y: data.y, nickname: data.nickname } }));
-    });
-    socket.on('cursor_leave', (id: string) => {
-      setCursors((p) => { const n = { ...p }; delete n[id]; return n; });
-      setUserViewports((p) => { const n = { ...p }; delete n[id]; return n; });
-      setFollowingUserId((prev) => prev === id ? null : prev);
-    });
-    socket.on('typing', (name: string) => setTypingUsers((p) => p.includes(name) ? p : [...p, name]));
-    socket.on('stop_typing', (name: string) => setTypingUsers((p) => p.filter((n) => n !== name)));
-    socket.on('user_joined', (name: string) => showToast(`${name}님이 입장했습니다`, 'join'));
-    socket.on('user_left', (name: string) => showToast(`${name}님이 퇴장했습니다`, 'leave'));
-    // Follow Me: 다른 유저의 뷰포트 수신
-    socket.on('viewport_update', (data: UserViewport & { id: string }) => {
-      setUserViewports((p) => ({ ...p, [data.id]: { scale: data.scale, x: data.x, y: data.y, nickname: data.nickname } }));
-      if (followingUserRef.current === data.id) {
-        setStageScale(data.scale);
-        setStagePos({ x: data.x, y: data.y });
-      }
-    });
-    // 이모지 반응 수신
-    socket.on('emoji_reaction', (data: EmojiReaction) => {
-      setEmojiReactions((p) => [...p, data]);
-      setTimeout(() => setEmojiReactions((p) => p.filter((r) => r.id !== data.id)), 1800);
-    });
-    return () => {
-      ['draw_line','clear_all','user_list','receive_message','cursor_move','cursor_leave',
-       'typing','stop_typing','user_joined','user_left','viewport_update','emoji_reaction']
-        .forEach((ev) => socket.off(ev));
-    };
-  }, []);
+  // ── 소켓 이벤트 훅 ──
+  useSocketEvents({
+    socket, setElements, setSelectedIndices,
+    setUsers, setMessages, setCursors,
+    setUserViewports, setFollowingUserId,
+    setTypingUsers, setStageScale, setStagePos,
+    setEmojiReactions, showToast,
+    followingUserRef, historyRef, historyStepRef,
+  });
 
   // 채팅 자동 스크롤
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -1049,95 +882,6 @@ export default function Board() {
     handleImageFile(file, dropPos);
   };
 
-  // ── 엘리먼트 렌더링 ──
-
-  const renderElement = (el: DrawElement, i: number) => {
-    const op = el.opacity ?? 1;
-    const dash = getDashArray(el.dash, stageScale);
-
-    if (el.tool === 'pen' || el.tool === 'eraser') {
-      return (
-        <Line key={i} points={el.points} stroke={el.color} strokeWidth={el.strokeWidth}
-          tension={0.5} lineCap="round" lineJoin="round" opacity={op}
-          globalCompositeOperation={el.tool === 'eraser' ? 'destination-out' : 'source-over'} />
-      );
-    }
-    if (el.tool === 'rect' && el.points.length >= 4) {
-      const x = Math.min(el.points[0], el.points[2]);
-      const y = Math.min(el.points[1], el.points[3]);
-      return (
-        <Rect key={i} x={x} y={y} width={Math.abs(el.points[2]-el.points[0])} height={Math.abs(el.points[3]-el.points[1])}
-          stroke={el.color} strokeWidth={el.strokeWidth} fill={el.filled ? el.color : undefined}
-          dash={dash} opacity={op} />
-      );
-    }
-    if (el.tool === 'circle' && el.points.length >= 4) {
-      return (
-        <Ellipse key={i}
-          x={(el.points[0]+el.points[2])/2} y={(el.points[1]+el.points[3])/2}
-          radiusX={Math.abs(el.points[2]-el.points[0])/2} radiusY={Math.abs(el.points[3]-el.points[1])/2}
-          stroke={el.color} strokeWidth={el.strokeWidth} fill={el.filled ? el.color : undefined}
-          dash={dash} opacity={op} />
-      );
-    }
-    if (el.tool === 'triangle' && el.points.length >= 4) {
-      const [x1, y1, x2, y2] = el.points;
-      const midX = (x1 + x2) / 2;
-      return (
-        <Line key={i} points={[midX, y1, x2, y2, x1, y2]} closed
-          stroke={el.color} strokeWidth={el.strokeWidth}
-          fill={el.filled ? el.color : undefined}
-          dash={dash} opacity={op} lineCap="round" lineJoin="round" />
-      );
-    }
-    if (el.tool === 'text' && el.text) {
-      return (
-        <Text key={i} x={el.points[0]} y={el.points[1]} text={el.text}
-          fontSize={el.fontSize||20} fill={el.color} fontFamily="sans-serif" opacity={op} />
-      );
-    }
-    if (el.tool === 'straight' && el.points.length >= 4) {
-      return (
-        <Line key={i} points={[el.points[0],el.points[1],el.points[2],el.points[3]]}
-          stroke={el.color} strokeWidth={el.strokeWidth} lineCap="round" dash={dash} opacity={op} />
-      );
-    }
-    if (el.tool === 'arrow' && el.points.length >= 4) {
-      return (
-        <Arrow key={i} points={[el.points[0],el.points[1],el.points[2],el.points[3]]}
-          stroke={el.color} strokeWidth={el.strokeWidth} fill={el.color}
-          pointerLength={12} pointerWidth={10} dash={dash} opacity={op} />
-      );
-    }
-    if (el.tool === 'sticky' && el.points.length >= 4) {
-      const x = Math.min(el.points[0], el.points[2]);
-      const y = Math.min(el.points[1], el.points[3]);
-      const w = Math.max(80, Math.abs(el.points[2]-el.points[0]));
-      const h = Math.max(60, Math.abs(el.points[3]-el.points[1]));
-      return (
-        <Group key={i} opacity={op}>
-          <Rect x={x} y={y} width={w} height={h} fill={el.stickyBg||'#fef08a'}
-            stroke="#ca8a04" strokeWidth={1} cornerRadius={4}
-            shadowColor="rgba(0,0,0,0.15)" shadowBlur={6} shadowOffsetY={2} shadowEnabled />
-          {el.text && (
-            <Text x={x+8} y={y+8} text={el.text} width={w-16}
-              fontSize={el.fontSize||14} fill="#1c1917" fontFamily="sans-serif" wrap="word" />
-          )}
-        </Group>
-      );
-    }
-    if (el.tool === 'image' && el.imageDataUrl) {
-      const img = imageCache.current.get(el.imageDataUrl);
-      if (!img) return null;
-      return (
-        <KonvaImage key={i} image={img} x={el.points[0]} y={el.points[1]}
-          width={el.points[2]||img.naturalWidth} height={el.points[3]||img.naturalHeight}
-          opacity={op} />
-      );
-    }
-    return null;
-  };
-
   // ── 커서 ──
 
   const getCursor = (): string => {
@@ -1213,23 +957,11 @@ export default function Board() {
   // ── 입장 화면 ──
   if (!isJoined) {
     return (
-      <div style={{ display:'flex', justifyContent:'center', alignItems:'center', height:'100vh', backgroundColor: isDarkMode ? '#111827' : '#f3f4f6' }}>
-        <div style={{ padding:'30px', backgroundColor: isDarkMode ? '#1f2937' : 'white', borderRadius:'12px', boxShadow:'0 4px 6px rgba(0,0,0,0.1)', display:'flex', flexDirection:'column', gap:'15px', width:'300px' }}>
-          <h2 style={{ margin:0, textAlign:'center', color: isDarkMode ? '#f3f4f6' : '#374151' }}>화이트보드 입장</h2>
-          <input type="text" value={nickname} onChange={(e) => setNickname(e.target.value)}
-            onKeyDown={(e) => e.key==='Enter' && handleJoin()} placeholder="닉네임을 입력하세요"
-            style={{ padding:'10px', borderRadius:'6px', border:`1px solid ${isDarkMode ? '#374151' : '#d1d5db'}`, backgroundColor: isDarkMode ? '#374151' : 'white', color: isDarkMode ? '#f3f4f6' : '#374151' }} />
-          <button onClick={() => handleJoin()} style={{ padding:'10px', backgroundColor:'#3b82f6', color:'white', border:'none', borderRadius:'6px', cursor:'pointer', fontWeight:'bold' }}>
-            입장하기
-          </button>
-          <button onClick={() => handleJoin(true)} style={{ padding:'8px', backgroundColor:'none', background:'none', border:`1px solid ${isDarkMode ? '#374151' : '#d1d5db'}`, borderRadius:'6px', cursor:'pointer', color: isDarkMode ? '#9ca3af' : '#6b7280', fontSize:'13px' }}>
-            👁️ 보기만 하기 (읽기 전용)
-          </button>
-          <button onClick={() => setIsDarkMode(v => !v)} style={{ padding:'6px', background:'none', border:`1px solid ${isDarkMode ? '#374151' : '#d1d5db'}`, borderRadius:'6px', cursor:'pointer', color: isDarkMode ? '#f3f4f6' : '#374151', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', fontSize:'13px' }}>
-            {isDarkMode ? <Sun size={14}/> : <Moon size={14}/>} {isDarkMode ? '라이트 모드' : '다크 모드'}
-          </button>
-        </div>
-      </div>
+      <LoginScreen
+        isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode}
+        nickname={nickname} setNickname={setNickname}
+        onJoin={handleJoin}
+      />
     );
   }
 
@@ -1612,28 +1344,7 @@ export default function Board() {
       </div>
 
       {/* 단축키 도움말 모달 */}
-      {showHelp && (
-        <div style={{ position:'fixed', inset:0, backgroundColor:'rgba(0,0,0,0.5)', zIndex:100, display:'flex', alignItems:'center', justifyContent:'center' }}
-          onClick={() => setShowHelp(false)}>
-          <div style={{ backgroundColor: theme.panel, borderRadius:'12px', padding:'28px', maxWidth:'480px', width:'90%', maxHeight:'80vh', overflowY:'auto' }}
-            onClick={(e) => e.stopPropagation()}>
-            <h2 style={{ margin:'0 0 16px', fontSize:'18px', color: theme.text }}>⌨️ 키보드 단축키</h2>
-            <table style={{ width:'100%', borderCollapse:'collapse' }}>
-              <tbody>
-                {SHORTCUTS.map(([key, desc]) => (
-                  <tr key={key} style={{ borderBottom:`1px solid ${theme.border}` }}>
-                    <td style={{ padding:'7px 0', width:'160px' }}>
-                      <code style={{ backgroundColor: isDarkMode ? '#374151' : '#f3f4f6', padding:'2px 8px', borderRadius:'4px', fontSize:'13px', color: theme.text }}>{key}</code>
-                    </td>
-                    <td style={{ padding:'7px 0', fontSize:'14px', color: theme.textMuted }}>{desc}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <button onClick={() => setShowHelp(false)} style={{ marginTop:'16px', padding:'8px 20px', backgroundColor:'#3b82f6', color:'white', border:'none', borderRadius:'6px', cursor:'pointer', width:'100%' }}>닫기</button>
-          </div>
-        </div>
-      )}
+      <HelpModal showHelp={showHelp} setShowHelp={setShowHelp} theme={theme} isDarkMode={isDarkMode} />
 
       {/* 캔버스 */}
       <Stage
@@ -1651,7 +1362,7 @@ export default function Board() {
         style={{ cursor: getCursor() }}
       >
         <Layer>
-          {elements.map(renderElement)}
+          {elements.map((el, i) => renderElement(el, i, stageScale, imageCache))}
           {/* 선택 박스 오버레이 */}
           {selectionRects}
           {/* 그룹 바운딩 박스 */}
