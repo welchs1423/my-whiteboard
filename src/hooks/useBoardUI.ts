@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
-import type { ToolType, DashStyle } from '../utils/elementHelpers';
+import type { ToolType, DashStyle, LineCapStyle } from '../utils/elementHelpers';
 import { generateId } from '../utils/elementHelpers';
 
 export interface Toast {
@@ -21,6 +21,7 @@ export function useBoardUI() {
   const [strokeWidth, setStrokeWidth] = useState(5);
   const [isFilled, setIsFilled] = useState(false);
   const [currentDash, setCurrentDash] = useState<DashStyle>('solid');
+  const [currentLineCap, setCurrentLineCap] = useState<LineCapStyle>('round');
   const [currentOpacity, setCurrentOpacity] = useState(1.0);
   const [stickyBg, setStickyBg] = useState('#fef08a');
 
@@ -98,6 +99,7 @@ export function useBoardUI() {
     strokeWidth, setStrokeWidth,
     isFilled, setIsFilled,
     currentDash, setCurrentDash,
+    currentLineCap, setCurrentLineCap,
     currentOpacity, setCurrentOpacity,
     stickyBg, setStickyBg,
     // pen options

@@ -55,6 +55,10 @@ const Board = mongoose.model('Board', BoardSchema);
 let users = {};
 let roomElements = {};
 let saveTimeouts = {};
+let roomHosts = {};        // { room: socketId }
+let roomPermissions = {};  // { room: { socketId: 'edit' | 'view' } }
+let roomTimelines = {};    // { room: TimelineEvent[] }
+let voiceRooms = {};       // { room: Set<socketId> }
 
 const debouncedSave = (room) => {
   if (saveTimeouts[room]) clearTimeout(saveTimeouts[room]);
@@ -75,23 +79,39 @@ io.on('connection', (socket) => {
       const savedData = await Board.findOne({ room });
       roomElements[room] = savedData ? savedData.elements : [];
     }
+    // 방장 지정 (첫 번째 사람)
+    if (!roomHosts[room]) {
+      roomHosts[room] = socket.id;
+      if (!roomPermissions[room]) roomPermissions[room] = {};
+    }
+    if (!roomPermissions[room]) roomPermissions[room] = {};
+    roomPermissions[room][socket.id] = 'edit';
+    if (!roomTimelines[room]) roomTimelines[room] = [];
     socket.emit('draw_line', roomElements[room]);
     const roomUsers = Object.entries(users).filter(([_, u]) => u.room === room).map(([id, u]) => ({ id, nickname: u.nickname }));
     io.to(room).emit('user_list', roomUsers);
+    io.to(room).emit('room_host', roomHosts[room]);
+    io.to(room).emit('room_permissions', roomPermissions[room]);
     socket.to(room).emit('user_joined', nickname);
   });
 
   socket.on('draw_line', (data) => {
     const user = users[socket.id];
     if (!user) return;
+    if (roomPermissions[user.room]?.[socket.id] === 'view') return; // 권한 체크
     socket.to(user.room).emit('draw_line', data);
     roomElements[user.room] = data;
+    // 타임라인 기록
+    if (!roomTimelines[user.room]) roomTimelines[user.room] = [];
+    roomTimelines[user.room].push({ timestamp: Date.now(), type: 'update', snapshot: [...data] });
+    if (roomTimelines[user.room].length > 500) roomTimelines[user.room] = roomTimelines[user.room].slice(-500);
     debouncedSave(user.room);
   });
 
   socket.on('update_element', (el) => {
     const user = users[socket.id];
     if (!user) return;
+    if (roomPermissions[user.room]?.[socket.id] === 'view') return; // 권한 체크
     socket.to(user.room).emit('update_element', el);
     if (!roomElements[user.room]) roomElements[user.room] = [];
     const idx = roomElements[user.room].findIndex(e => e.id === el.id);
@@ -102,7 +122,72 @@ io.on('connection', (socket) => {
 
   socket.on('clear_all', () => {
     const user = users[socket.id];
-    if (user) { socket.to(user.room).emit('clear_all'); roomElements[user.room] = []; debouncedSave(user.room); }
+    if (!user) return;
+    if (roomPermissions[user.room]?.[socket.id] === 'view') return;
+    socket.to(user.room).emit('clear_all');
+    roomElements[user.room] = [];
+    if (!roomTimelines[user.room]) roomTimelines[user.room] = [];
+    roomTimelines[user.room].push({ timestamp: Date.now(), type: 'clear', snapshot: [] });
+    debouncedSave(user.room);
+  });
+
+  // ── 권한 관리 ──
+  socket.on('set_permission', ({ targetId, permission }) => {
+    const user = users[socket.id];
+    if (!user || roomHosts[user.room] !== socket.id) return; // 방장만 가능
+    if (!roomPermissions[user.room]) roomPermissions[user.room] = {};
+    roomPermissions[user.room][targetId] = permission;
+    io.to(user.room).emit('room_permissions', roomPermissions[user.room]);
+  });
+
+  socket.on('transfer_host', ({ targetId }) => {
+    const user = users[socket.id];
+    if (!user || roomHosts[user.room] !== socket.id) return;
+    roomHosts[user.room] = targetId;
+    io.to(user.room).emit('room_host', targetId);
+  });
+
+  // ── 타임라인 요청 ──
+  socket.on('request_timeline', () => {
+    const user = users[socket.id];
+    if (!user) return;
+    socket.emit('timeline_data', roomTimelines[user.room] || []);
+  });
+
+  // ── WebRTC 시그널링 ──
+  socket.on('voice_join', ({ room }) => {
+    if (!voiceRooms[room]) voiceRooms[room] = new Set();
+    // 기존 음성 참여자들에게 새 참여자 알림
+    const user = users[socket.id];
+    if (!user) return;
+    voiceRooms[room].forEach(peerId => {
+      io.to(peerId).emit('voice_user_joined', { id: socket.id, nickname: user.nickname });
+    });
+    voiceRooms[room].add(socket.id);
+  });
+
+  socket.on('voice_leave', ({ room }) => {
+    if (voiceRooms[room]) {
+      voiceRooms[room].delete(socket.id);
+      socket.to(room).emit('voice_user_left', { id: socket.id });
+    }
+  });
+
+  socket.on('voice_offer', ({ to, offer }) => {
+    const user = users[socket.id];
+    io.to(to).emit('voice_offer', { from: socket.id, offer, nickname: user?.nickname });
+  });
+
+  socket.on('voice_answer', ({ to, answer }) => {
+    io.to(to).emit('voice_answer', { from: socket.id, answer });
+  });
+
+  socket.on('voice_ice_candidate', ({ to, candidate }) => {
+    io.to(to).emit('voice_ice_candidate', { from: socket.id, candidate });
+  });
+
+  socket.on('voice_mute', ({ room, muted }) => {
+    socket.to(room).emit('voice_mute_update', { id: socket.id, muted });
   });
 
   socket.on('cursor_move', (pos) => { const user = users[socket.id]; if (user) socket.to(user.room).emit('cursor_move', { id: socket.id, x: pos.x, y: pos.y, nickname: user.nickname }); });
@@ -115,11 +200,28 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const user = users[socket.id];
     if (user) {
+      // 음성 채팅 정리
+      if (voiceRooms[user.room]) {
+        voiceRooms[user.room].delete(socket.id);
+        socket.to(user.room).emit('voice_user_left', { id: socket.id });
+      }
+      // 방장 이전
+      if (roomHosts[user.room] === socket.id) {
+        const remaining = Object.entries(users).filter(([id, u]) => id !== socket.id && u.room === user.room);
+        if (remaining.length > 0) {
+          roomHosts[user.room] = remaining[0][0];
+          io.to(user.room).emit('room_host', remaining[0][0]);
+        } else {
+          delete roomHosts[user.room];
+        }
+      }
+      if (roomPermissions[user.room]) delete roomPermissions[user.room][socket.id];
       delete users[socket.id];
       const roomUsers = Object.entries(users).filter(([_, u]) => u.room === user.room).map(([id, u]) => ({ id, nickname: u.nickname }));
       io.to(user.room).emit('user_list', roomUsers);
       io.to(user.room).emit('cursor_leave', socket.id);
       socket.to(user.room).emit('user_left', user.nickname);
+      io.to(user.room).emit('room_permissions', roomPermissions[user.room] || {});
     }
   });
 });

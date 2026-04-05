@@ -2,9 +2,10 @@
 
 export type ToolType =
   | 'pen' | 'eraser' | 'rect' | 'circle' | 'text'
-  | 'arrow' | 'straight' | 'select' | 'sticky' | 'image' | 'triangle';
+  | 'arrow' | 'straight' | 'select' | 'sticky' | 'image' | 'triangle' | 'frame';
 
 export type DashStyle = 'solid' | 'dashed' | 'dotted';
+export type LineCapStyle = 'round' | 'square' | 'butt';
 
 export interface DrawElement {
   id?: string;
@@ -16,11 +17,13 @@ export interface DrawElement {
   text?: string;
   fontSize?: number;
   dash?: DashStyle;
+  lineCap?: LineCapStyle;
   opacity?: number;
   stickyBg?: string;
   imageDataUrl?: string;
   locked?: boolean;
   groupId?: string;
+  frameTitle?: string;
 }
 
 export interface Bounds {
@@ -58,7 +61,7 @@ export function getElementBounds(el: DrawElement): Bounds | null {
     return { x: minX - pad, y: minY - pad, width: maxX - minX + pad * 2, height: maxY - minY + pad * 2 };
   }
 
-  if (['rect', 'circle', 'straight', 'arrow', 'sticky', 'triangle'].includes(el.tool)) {
+  if (['rect', 'circle', 'straight', 'arrow', 'sticky', 'triangle', 'frame'].includes(el.tool)) {
     if (el.points.length < 4) return null;
     const x = Math.min(el.points[0], el.points[2]);
     const y = Math.min(el.points[1], el.points[3]);

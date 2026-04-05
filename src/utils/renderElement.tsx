@@ -15,7 +15,7 @@ export function renderElement(
   if (el.tool === 'pen' || el.tool === 'eraser') {
     return (
       <Line key={i} points={el.points} stroke={el.color} strokeWidth={el.strokeWidth}
-        tension={0.5} lineCap="round" lineJoin="round" opacity={op}
+        tension={0.5} lineCap={el.lineCap ?? 'round'} lineJoin="round" opacity={op}
         globalCompositeOperation={el.tool === 'eraser' ? 'destination-out' : 'source-over'} />
     );
   }
@@ -56,14 +56,15 @@ export function renderElement(
   if (el.tool === 'straight' && el.points.length >= 4) {
     return (
       <Line key={i} points={[el.points[0], el.points[1], el.points[2], el.points[3]]}
-        stroke={el.color} strokeWidth={el.strokeWidth} lineCap="round" dash={dash} opacity={op} />
+        stroke={el.color} strokeWidth={el.strokeWidth} lineCap={el.lineCap ?? 'round'} dash={dash} opacity={op} />
     );
   }
   if (el.tool === 'arrow' && el.points.length >= 4) {
     return (
       <Arrow key={i} points={[el.points[0], el.points[1], el.points[2], el.points[3]]}
         stroke={el.color} strokeWidth={el.strokeWidth} fill={el.color}
-        pointerLength={12} pointerWidth={10} dash={dash} opacity={op} />
+        pointerLength={12} pointerWidth={10} dash={dash} opacity={op}
+        lineCap={el.lineCap ?? 'round'} />
     );
   }
   if (el.tool === 'sticky' && el.points.length >= 4) {
@@ -90,6 +91,23 @@ export function renderElement(
       <KonvaImage key={i} image={img} x={el.points[0]} y={el.points[1]}
         width={el.points[2] || img.naturalWidth} height={el.points[3] || img.naturalHeight}
         opacity={op} />
+    );
+  }
+  if (el.tool === 'frame' && el.points.length >= 4) {
+    const x = Math.min(el.points[0], el.points[2]);
+    const y = Math.min(el.points[1], el.points[3]);
+    const w = Math.abs(el.points[2] - el.points[0]);
+    const h = Math.abs(el.points[3] - el.points[1]);
+    return (
+      <Group key={i} opacity={op}>
+        <Rect x={x} y={y} width={w} height={h}
+          fill="white" stroke="#6366f1" strokeWidth={2}
+          dash={[8, 4]} cornerRadius={4} listening={false} />
+        <Rect x={x} y={y - 22} width={Math.min(w, 200)} height={20}
+          fill="#6366f1" cornerRadius={[4, 4, 0, 0]} listening={false} />
+        <Text x={x + 6} y={y - 19} text={el.frameTitle || `Frame`}
+          fontSize={12} fill="white" fontFamily="sans-serif" listening={false} />
+      </Group>
     );
   }
   return null;

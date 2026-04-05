@@ -4,9 +4,9 @@ import {
   Undo2, Redo2, Type, ArrowRight, Minus, PaintBucket, Grid2X2,
   MousePointer, FileJson, Upload,
   HelpCircle, ImageIcon, StickyNote,
-  Magnet, Sun, Moon, Triangle, Spline, Wand2,
+  Magnet, Sun, Moon, Triangle, Spline, Wand2, Layout,
 } from 'lucide-react';
-import type { ToolType, DashStyle } from '../utils/elementHelpers';
+import type { ToolType, DashStyle, LineCapStyle } from '../utils/elementHelpers';
 
 const COLORS = ['#000000', '#ef4444', '#3b82f6', '#22c55e', '#f59e0b'];
 const REACTION_EMOJIS = ['👍', '❤️', '😂', '🎉', '🔥', '😮', '👏', '✨'];
@@ -66,6 +66,14 @@ export interface ToolbarProps {
   setShowHelp: React.Dispatch<React.SetStateAction<boolean>>;
   importInputRef: React.RefObject<HTMLInputElement | null>;
   imageInputRef: React.RefObject<HTMLInputElement | null>;
+  currentLineCap: LineCapStyle;
+  setCurrentLineCap: React.Dispatch<React.SetStateAction<LineCapStyle>>;
+  showLayerPanel: boolean;
+  setShowLayerPanel: React.Dispatch<React.SetStateAction<boolean>>;
+  showFramePanel: boolean;
+  setShowFramePanel: React.Dispatch<React.SetStateAction<boolean>>;
+  showTimeline: boolean;
+  setShowTimeline: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 export default function Toolbar({
@@ -89,6 +97,10 @@ export default function Toolbar({
   handleImportJSON, handleImageFile,
   setShowHelp,
   importInputRef, imageInputRef,
+  currentLineCap, setCurrentLineCap,
+  showLayerPanel, setShowLayerPanel,
+  showFramePanel, setShowFramePanel,
+  showTimeline, setShowTimeline,
 }: ToolbarProps) {
   const toolBtn = (active: boolean): React.CSSProperties => ({
     background: 'none', border: 'none', cursor: 'pointer',
@@ -102,6 +114,11 @@ export default function Toolbar({
     padding: '3px 8px', border: active ? '2px solid #3b82f6' : `1px solid ${theme.border}`,
     borderRadius: '4px', cursor: 'pointer', background: active ? '#eff6ff' : 'none',
     color: active ? '#3b82f6' : theme.textMuted, fontSize: '13px', fontWeight: 'bold', lineHeight: 1,
+  });
+  const capBtn = (active: boolean): React.CSSProperties => ({
+    padding: '3px 8px', border: active ? '2px solid #8b5cf6' : `1px solid ${theme.border}`,
+    borderRadius: '4px', cursor: 'pointer', background: active ? '#f5f3ff' : 'none',
+    color: active ? '#8b5cf6' : theme.textMuted, fontSize: '11px', fontWeight: 'bold', lineHeight: 1,
   });
 
   return (
@@ -142,6 +159,7 @@ export default function Toolbar({
             <button onClick={() => setTool('arrow')} title="화살표 (A)" style={toolBtn(tool==='arrow')}><ArrowRight size={22}/></button>
             <button onClick={() => setTool('sticky')} title="스티커 메모 (N)" style={toolBtn(tool==='sticky')}><StickyNote size={22}/></button>
             <button onClick={() => setTool('triangle')} title="삼각형 (V)" style={toolBtn(tool==='triangle')}><Triangle size={22}/></button>
+            <button onClick={() => setTool('frame')} title="프레임 (F2)" style={toolBtn(tool==='frame')}><Layout size={22}/></button>
           </div>
         )}
 
@@ -236,6 +254,16 @@ export default function Toolbar({
           </div>
         )}
 
+        {/* 선 끝 스타일 (pen/straight/arrow) */}
+        {!isViewOnly && ['pen','eraser','straight','arrow'].includes(tool) && (
+          <div style={{ display:'flex', gap:'4px', alignItems:'center', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
+            <span style={{ fontSize:'10px', color:theme.textMuted, whiteSpace:'nowrap' }}>끝</span>
+            <button style={capBtn(currentLineCap==='round')} onClick={() => setCurrentLineCap('round')} title="둥근 끝점">○</button>
+            <button style={capBtn(currentLineCap==='square')} onClick={() => setCurrentLineCap('square')} title="사각 끝점">□</button>
+            <button style={capBtn(currentLineCap==='butt')} onClick={() => setCurrentLineCap('butt')} title="평단 끝점">|—|</button>
+          </div>
+        )}
+
         {/* 투명도 */}
         {!isViewOnly && (
           <div style={{ display:'flex', alignItems:'center', gap:'6px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
@@ -261,6 +289,10 @@ export default function Toolbar({
               <button onClick={handleExportJSON} title="JSON 내보내기" style={iconBtn}><FileJson size={22}/></button>
               <button onClick={() => importInputRef.current?.click()} title="JSON 가져오기" style={iconBtn}><Upload size={22}/></button>
               <button onClick={() => imageInputRef.current?.click()} title="이미지 삽입" style={iconBtn}><ImageIcon size={22}/></button>
+              <span style={{ width:'1px', height:'20px', backgroundColor: theme.border }} />
+              <button onClick={() => setShowLayerPanel(v => !v)} title="레이어 패널" style={{ ...iconBtn, color: showLayerPanel?'#6366f1':'#9ca3af' }}>&#9638;</button>
+              <button onClick={() => setShowFramePanel(v => !v)} title="프레임 패널" style={{ ...iconBtn, color: showFramePanel?'#6366f1':'#9ca3af' }}><Layout size={22}/></button>
+              <button onClick={() => setShowTimeline(v => !v)} title="타임라인" style={{ ...iconBtn, color: showTimeline?'#6366f1':'#9ca3af' }}>&#9654;</button>
               <button onClick={handleClearAll} title="전체 지우기" style={{ ...iconBtn, color:'#ef4444' }}><Trash2 size={22}/></button>
             </>
           )}

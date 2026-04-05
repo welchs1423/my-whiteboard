@@ -1,6 +1,7 @@
 import { useEffect, type MutableRefObject } from 'react';
 import type { Socket } from 'socket.io-client';
 import type { DrawElement } from '../utils/elementHelpers';
+import type { TimelineEvent } from '../components/TimelinePlayer';
 
 interface CursorData { x: number; y: number; nickname: string; }
 interface ChatMessage { text: string; sender: string; time: string; }
@@ -26,6 +27,10 @@ interface UseSocketEventsParams {
   followingUserRef: MutableRefObject<string | null>;
   historyRef: MutableRefObject<DrawElement[][]>;
   historyStepRef: MutableRefObject<number>;
+  // 신규: 권한/타임라인
+  setHostId?: React.Dispatch<React.SetStateAction<string | null>>;
+  setPermissions?: React.Dispatch<React.SetStateAction<Record<string, 'edit' | 'view'>>>;
+  setTimelineEvents?: React.Dispatch<React.SetStateAction<TimelineEvent[]>>;
 }
 
 export function useSocketEvents({
@@ -36,6 +41,7 @@ export function useSocketEvents({
   setTypingUsers, setStageScale, setStagePos,
   setEmojiReactions, showToast,
   followingUserRef, historyRef, historyStepRef,
+  setHostId, setPermissions, setTimelineEvents,
 }: UseSocketEventsParams) {
   useEffect(() => {
     socket.on('draw_line', (data: DrawElement[]) => setElements(data));
@@ -89,9 +95,14 @@ export function useSocketEvents({
       setTimeout(() => setEmojiReactions((p) => p.filter((r) => r.id !== data.id)), 1800);
     });
 
+    if (setHostId) socket.on('room_host', (id: string) => setHostId(id));
+    if (setPermissions) socket.on('room_permissions', (perms: Record<string, 'edit' | 'view'>) => setPermissions(perms));
+    if (setTimelineEvents) socket.on('timeline_data', (events: TimelineEvent[]) => setTimelineEvents(events));
+
     return () => {
       ['draw_line', 'update_element', 'clear_all', 'user_list', 'receive_message', 'cursor_move', 'cursor_leave',
-        'typing', 'stop_typing', 'user_joined', 'user_left', 'viewport_update', 'emoji_reaction']
+        'typing', 'stop_typing', 'user_joined', 'user_left', 'viewport_update', 'emoji_reaction',
+        'room_host', 'room_permissions', 'timeline_data']
         .forEach((ev) => socket.off(ev));
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps

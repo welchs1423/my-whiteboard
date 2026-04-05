@@ -10,6 +10,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { io } from 'socket.io-client';
+import { jsPDF } from 'jspdf';
 import type { DrawElement, Bounds } from '../utils/elementHelpers';
 import {
   generateId, getElementBounds, moveElementBy,
@@ -26,6 +27,10 @@ import HelpModal from './HelpModal';
 import Toolbar from './Toolbar';
 import Minimap from './Minimap';
 import ChatPanel from './ChatPanel';
+import LayerPanel from './LayerPanel';
+import TimelinePlayer, { type TimelineEvent } from './TimelinePlayer';
+import FramePanel from './FramePanel';
+import VoiceChat from './VoiceChat';
 
 const socket = io('http://localhost:3001');
 
@@ -57,6 +62,7 @@ export default function Board() {
     strokeWidth, setStrokeWidth,
     isFilled, setIsFilled,
     currentDash, setCurrentDash,
+    currentLineCap, setCurrentLineCap,
     currentOpacity, setCurrentOpacity,
     stickyBg, setStickyBg,
     isSmoothing, setIsSmoothing, isSmoothingRef,
@@ -90,6 +96,22 @@ export default function Board() {
   const [nickname, setNickname] = useState('');
   const [roomId, setRoomId] = useState(() => new URLSearchParams(window.location.search).get('room') || 'main');
   const [isViewOnly, setIsViewOnly] = useState(false);
+
+  // ── 권한 / 방장 ──
+  const [hostId, setHostId] = useState<string | null>(null);
+  const [permissions, setPermissions] = useState<Record<string, 'edit' | 'view'>>({});
+
+  // ── 레이어 패널 ──
+  const [showLayerPanel, setShowLayerPanel] = useState(false);
+  const [hiddenIndices, setHiddenIndices] = useState<Set<number>>(new Set());
+
+  // ── 프레임 패널 ──
+  const [showFramePanel, setShowFramePanel] = useState(false);
+  const [currentFrameId, setCurrentFrameId] = useState<string | null>(null);
+
+  // ── 타임라인 ──
+  const [showTimeline, setShowTimeline] = useState(false);
+  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
 
   // ── 캔버스 데이터 ──
   const [elements, setElements] = useState<DrawElement[]>([]);
@@ -374,6 +396,109 @@ export default function Board() {
     setStagePos({ x: (w - cw * newScale) / 2 - minX * newScale, y: (h - ch * newScale) / 2 - minY * newScale });
   };
 
+  // ── 레이어 패널 핸들러 ──
+  const handleLayerReorder = useCallback((from: number, to: number) => {
+    const upd = [...elementsRef.current];
+    const [el] = upd.splice(from, 1);
+    upd.splice(to, 0, el);
+    setElements(upd);
+    saveHistoryWith(upd);
+    socket.emit('draw_line', upd);
+  }, [saveHistoryWith]);
+
+  const handleLayerDelete = useCallback((idx: number) => {
+    const upd = elementsRef.current.filter((_, i) => i !== idx);
+    setElements(upd);
+    setSelectedIndices(new Set());
+    saveHistoryWith(upd);
+    socket.emit('draw_line', upd);
+  }, [saveHistoryWith]);
+
+  const handleToggleLayerVisibility = useCallback((idx: number) => {
+    setHiddenIndices(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) { next.delete(idx); } else { next.add(idx); }
+      return next;
+    });
+  }, []);
+
+  const handleToggleLayerLock = useCallback((idx: number) => {
+    const upd = elementsRef.current.map((el, i) =>
+      i === idx ? { ...el, locked: !el.locked } : el
+    );
+    setElements(upd);
+    saveHistoryWith(upd);
+    socket.emit('draw_line', upd);
+  }, [saveHistoryWith]);
+
+  // ── 프레임 핸들러 ──
+  const handleAddFrame = useCallback(() => {
+    const cx = (stageSize.width / 2 - stagePos.x) / stageScale;
+    const cy = (stageSize.height / 2 - stagePos.y) / stageScale;
+    const w = 800, h = 600;
+    const newEl: DrawElement = {
+      id: generateId(), tool: 'frame',
+      points: [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2],
+      color: '#6366f1', strokeWidth: 2,
+      frameTitle: `Frame ${elementsRef.current.filter(e => e.tool === 'frame').length + 1}`,
+    };
+    setElements(prev => {
+      const upd = [...prev, newEl];
+      saveHistoryWith(upd);
+      socket.emit('update_element', newEl);
+      return upd;
+    });
+    setCurrentFrameId(newEl.id ?? null);
+  }, [stageSize, stagePos, stageScale, saveHistoryWith]);
+
+  const handleNavigateToFrame = useCallback((frame: DrawElement) => {
+    if (frame.points.length < 4) return;
+    setCurrentFrameId(frame.id ?? null);
+    const x1 = Math.min(frame.points[0], frame.points[2]);
+    const y1 = Math.min(frame.points[1], frame.points[3]);
+    const fw = Math.abs(frame.points[2] - frame.points[0]);
+    const fh = Math.abs(frame.points[3] - frame.points[1]);
+    const pad = 40;
+    const newScale = Math.min(
+      (stageSize.width - pad * 2) / fw,
+      (stageSize.height - pad * 2) / fh,
+      4,
+    );
+    setStageScale(newScale);
+    setStagePos({
+      x: stageSize.width / 2 - (x1 + fw / 2) * newScale,
+      y: stageSize.height / 2 - (y1 + fh / 2) * newScale,
+    });
+  }, [stageSize, setStagePos, setStageScale]);
+
+  // ── PDF 내보내기 ──
+  const handleExportPDF = useCallback(async () => {
+    const frames = elementsRef.current.filter(el => el.tool === 'frame');
+    if (!frames.length || !stageRef.current) { showToast('내보낼 프레임이 없습니다', 'info'); return; }
+
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: 'a4' });
+    const pageW = pdf.internal.pageSize.getWidth();
+    const pageH = pdf.internal.pageSize.getHeight();
+
+    for (let i = 0; i < frames.length; i++) {
+      const frame = frames[i];
+      handleNavigateToFrame(frame);
+      // 뷰포트 반영 대기
+      await new Promise(r => setTimeout(r, 100));
+      const dataUrl = stageRef.current!.toDataURL({ pixelRatio: 1.5 });
+      if (i > 0) pdf.addPage();
+      pdf.addImage(dataUrl, 'PNG', 0, 0, pageW, pageH);
+    }
+
+    pdf.save(`whiteboard-frames-${Date.now()}.pdf`);
+    showToast(`${frames.length}개 프레임을 PDF로 저장했습니다`, 'info');
+  }, [handleNavigateToFrame, showToast]);
+
+  // ── 권한 핸들러 ──
+  const handleSetPermission = useCallback((targetId: string, perm: 'edit' | 'view') => {
+    socket.emit('set_permission', { targetId, permission: perm, room: roomId });
+  }, [roomId]);
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const snap = useCallback((v: number) => isSnapEnabledRef.current ? Math.round(v / 28) * 28 : v, []);
 
@@ -410,6 +535,13 @@ export default function Board() {
     socket.emit('viewport_update', { scale: stageScale, x: stagePos.x, y: stagePos.y });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stageScale, stagePos, isJoined]);
+
+  useEffect(() => {
+    if (showTimeline) {
+      socket.emit('request_timeline', { room: roomId });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showTimeline]);
 
   useEffect(() => {
     const up = () => {
@@ -478,6 +610,7 @@ export default function Board() {
     setTypingUsers, setStageScale, setStagePos,
     setEmojiReactions, showToast,
     followingUserRef, historyRef, historyStepRef,
+    setHostId, setPermissions, setTimelineEvents,
   });
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -579,7 +712,7 @@ export default function Board() {
     // State
     contextMenu, elements, selectedIndices, tool,
     isEmojiMode, selectedEmoji, nickname, isViewOnly,
-    currentColor, strokeWidth, isFilled, currentDash, currentOpacity, stickyBg,
+    currentColor, strokeWidth, isFilled, currentDash, currentLineCap, currentOpacity, stickyBg,
     // Setters
     setContextMenu, setEmojiReactions, setTextInput,
     setElements, setSelectedIndices, setBoxSelectRect, setStagePos,
@@ -717,6 +850,10 @@ export default function Board() {
         handleImportJSON={handleImportJSON} handleImageFile={handleImageFile}
         setShowHelp={setShowHelp}
         importInputRef={importInputRef} imageInputRef={imageInputRef}
+        currentLineCap={currentLineCap} setCurrentLineCap={setCurrentLineCap}
+        showLayerPanel={showLayerPanel} setShowLayerPanel={setShowLayerPanel}
+        showFramePanel={showFramePanel} setShowFramePanel={setShowFramePanel}
+        showTimeline={showTimeline} setShowTimeline={setShowTimeline}
       />
 
       {/* 줌 인디케이터 */}
@@ -775,25 +912,41 @@ export default function Board() {
       )}
 
       {/* 접속자 목록 */}
-      <div style={{ position:'absolute', top:'20px', right:'20px', zIndex:10, backgroundColor: theme.panel, padding:'14px', borderRadius:'12px', boxShadow: theme.shadow, width:'170px' }}>
+      <div style={{ position:'absolute', top:'20px', right:'20px', zIndex:10, backgroundColor: theme.panel, padding:'14px', borderRadius:'12px', boxShadow: theme.shadow, width:'190px' }}>
         <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', fontSize:'14px', fontWeight:'bold', color: theme.text }}>
           <Users size={18}/> {roomId} 방 ({users.length}명)
         </div>
         {users.map((u) => {
           const isMe = u.nickname === nickname;
           const isFollowing = followingUserId === u.id;
+          const isHost = u.id === hostId;
+          const myId = socket.id;
+          const iAmHost = myId === hostId;
+          const userPerm = permissions[u.id] ?? 'edit';
           return (
-            <div key={u.id} style={{ fontSize:'13px', color: theme.textMuted, display:'flex', alignItems:'center', gap:'5px', marginBottom:'4px' }}>
+            <div key={u.id} style={{ fontSize:'13px', color: theme.textMuted, display:'flex', alignItems:'center', gap:'4px', marginBottom:'4px' }}>
               <div style={{ width:'6px', height:'6px', borderRadius:'50%', backgroundColor:'#22c55e', flexShrink:0 }}/>
+              {isHost && <span title="방장" style={{ fontSize:'11px' }}>👑</span>}
               <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{u.nickname}</span>
               {!isMe && (
-                <button
-                  onClick={() => setFollowingUserId(isFollowing ? null : u.id)}
-                  title={isFollowing ? '팔로우 중지' : '화면 따라가기'}
-                  style={{ background:'none', border:'none', cursor:'pointer', padding:'1px 2px', fontSize:'13px', color: isFollowing ? '#3b82f6' : theme.textSubtle, borderRadius:'3px' }}
-                >
-                  {isFollowing ? '👁️' : '👁'}
-                </button>
+                <>
+                  <button
+                    onClick={() => setFollowingUserId(isFollowing ? null : u.id)}
+                    title={isFollowing ? '팔로우 중지' : '화면 따라가기'}
+                    style={{ background:'none', border:'none', cursor:'pointer', padding:'1px', fontSize:'12px', color: isFollowing ? '#3b82f6' : theme.textSubtle, borderRadius:'3px' }}
+                  >
+                    {isFollowing ? '👁️' : '👁'}
+                  </button>
+                  {iAmHost && (
+                    <button
+                      onClick={() => handleSetPermission(u.id, userPerm === 'edit' ? 'view' : 'edit')}
+                      title={userPerm === 'edit' ? '읽기 전용으로 변경' : '편집 권한 부여'}
+                      style={{ background:'none', border:'none', cursor:'pointer', padding:'1px', fontSize:'10px', color: userPerm === 'edit' ? '#22c55e' : '#f59e0b', borderRadius:'3px' }}
+                    >
+                      {userPerm === 'edit' ? '✏️' : '👁'}
+                    </button>
+                  )}
+                </>
               )}
             </div>
           );
@@ -886,7 +1039,58 @@ export default function Board() {
 
       <HelpModal showHelp={showHelp} setShowHelp={setShowHelp} theme={theme} isDarkMode={isDarkMode} />
 
-      {/* 캔버스 우클릭 메뉴 */}
+      {/* ── 레이어 패널 ── */}
+      {showLayerPanel && (
+        <LayerPanel
+          elements={elements}
+          selectedIndices={selectedIndices}
+          theme={theme}
+          onSelect={(indices) => setSelectedIndices(indices)}
+          onReorder={handleLayerReorder}
+          onDelete={handleLayerDelete}
+          onToggleLock={handleToggleLayerLock}
+          onToggleVisibility={handleToggleLayerVisibility}
+          hiddenIndices={hiddenIndices}
+        />
+      )}
+
+      {/* ── 프레임 패널 ── */}
+      {showFramePanel && (
+        <FramePanel
+          frames={elements.filter(el => el.tool === 'frame')}
+          allElements={elements}
+          stageRef={stageRef}
+          stageScale={stageScale}
+          stagePos={stagePos}
+          theme={theme}
+          onAddFrame={handleAddFrame}
+          onNavigate={handleNavigateToFrame}
+          onExportPDF={handleExportPDF}
+          currentFrameId={currentFrameId}
+        />
+      )}
+
+      {/* ── 타임라인 플레이어 ── */}
+      {showTimeline && (
+        <TimelinePlayer
+          events={timelineEvents}
+          theme={theme}
+          onSnapshot={(snapshot) => setElements(snapshot)}
+          onClose={() => setShowTimeline(false)}
+        />
+      )}
+
+      {/* ── 음성 채팅 ── */}
+      {isJoined && (
+        <VoiceChat
+          socket={socket}
+          nickname={nickname}
+          roomId={roomId}
+          theme={theme}
+        />
+      )}
+
+      {/* ── 접속자 목록 (방장/권한 표시 포함) ── */}
       {contextMenu && (
         <div
           style={{
@@ -941,7 +1145,7 @@ export default function Board() {
         style={{ cursor: getCursor() }}
       >
         <Layer>
-          {elements.map((el, i) => renderElement(el, i, stageScale, imageCache))}
+          {elements.map((el, i) => hiddenIndices.has(i) ? null : renderElement(el, i, stageScale, imageCache))}
           {selectionRects}
           {groupRects}
           {boxSelectRect && (

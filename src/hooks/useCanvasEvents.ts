@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import type { RefObject, MutableRefObject, Dispatch, SetStateAction } from 'react';
 import Konva from 'konva';
 import type { Socket } from 'socket.io-client';
-import type { DrawElement, ToolType, DashStyle, Bounds } from '../utils/elementHelpers';
+import type { DrawElement, ToolType, DashStyle, LineCapStyle, Bounds } from '../utils/elementHelpers';
 import {
   generateId, getElementAtPoint, getElementsInRect, moveElementBy,
   smoothPoints, simplifyPoints, detectSmartShape,
@@ -42,6 +42,7 @@ export interface CanvasEventsParams {
   strokeWidth: number;
   isFilled: boolean;
   currentDash: DashStyle;
+  currentLineCap: LineCapStyle;
   currentOpacity: number;
   stickyBg: string;
   // Setters
@@ -144,7 +145,9 @@ export function useCanvasEvents(p: CanvasEventsParams) {
         : [p.snap(pos.x), p.snap(pos.y), p.snap(pos.x), p.snap(pos.y)],
       color: p.currentColor, strokeWidth: p.strokeWidth,
       filled: p.isFilled, dash: p.currentDash, opacity: p.currentOpacity,
+      ...(['pen','eraser','straight','arrow'].includes(p.tool) ? { lineCap: p.currentLineCap } : {}),
       ...(p.tool === 'sticky' ? { stickyBg: p.stickyBg } : {}),
+      ...(p.tool === 'frame' ? { frameTitle: 'Frame' } : {}),
     };
     p.setElements(prev => {
       const upd = [...prev, newEl];
@@ -152,7 +155,7 @@ export function useCanvasEvents(p: CanvasEventsParams) {
       return upd;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.contextMenu, p.elements, p.selectedIndices, p.tool, p.isEmojiMode, p.selectedEmoji, p.nickname, p.isViewOnly, p.currentColor, p.strokeWidth, p.isFilled, p.currentDash, p.currentOpacity, p.stickyBg, p.getCanvasPos, p.snap, p.commitText]);
+  }, [p.contextMenu, p.elements, p.selectedIndices, p.tool, p.isEmojiMode, p.selectedEmoji, p.nickname, p.isViewOnly, p.currentColor, p.strokeWidth, p.isFilled, p.currentDash, p.currentLineCap, p.currentOpacity, p.stickyBg, p.getCanvasPos, p.snap, p.commitText]);
 
   const handleMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     if (p.isPanning.current && p.panStart.current) {

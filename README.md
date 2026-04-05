@@ -77,20 +77,10 @@ A real-time collaborative whiteboard web application built with React, Konva.js,
 - [x] **렌더링 최적화:** `useMemo` / `useCallback` 전면 적용 — 테마, 미니맵 계산, 선택 박스, 마우스 핸들러 등 매 렌더 재생성 방지
 - [x] **파일 구조 분리 (Phase 2):** `useBoardUI` (도구·스타일·토스트·테마) 및 `useViewport` (줌·패닝·좌표 변환) 커스텀 훅 분리 — Board.tsx 로직 모듈화
 - [x] **파일 구조 분리 (Phase 3):** `useCanvasEvents` 커스텀 훅 분리 — `handleMouseDown/Move/Up/DblClick` 캔버스 이벤트 핸들러 일괄 이동
-
-## 🗂 Project Structure
-
-```
-src/
-├── components/
-│   ├── Board.tsx          # 메인 보드 컴포넌트 (~1380줄, 리팩터링으로 축소)
-│   ├── LoginScreen.tsx    # 입장 화면
-│   └── HelpModal.tsx      # 단축키 도움말 모달
-├── hooks/
-│   ├── useHistory.ts      # Undo/Redo 히스토리 관리
-│   ├── useSocketEvents.ts # 소켓 이벤트 리스너
-│   └── useKeyboardShortcuts.ts # 전역 키보드 단축키
-└── utils/
-    ├── elementHelpers.ts  # 도형 타입, 좌표 연산 유틸
-    └── renderElement.tsx  # Konva 요소 렌더링 함수
-```
+- [x] **선 끝 스타일 (Line Cap):** 펜·직선·화살표 도구에 round / square / butt 세 가지 끝점 스타일 선택 (툴바 토글 버튼)
+- [x] **레이어 패널:** 툴바 버튼으로 열리는 좌측 레이어 목록 — 클릭 선택, 드래그&드롭 순서 변경, 가시성 토글(눈 아이콘), 개별 잠금/삭제 지원
+- [x] **프레임/슬라이드 도구:** 📐 프레임 도구로 특정 캔버스 영역을 슬라이드로 지정, 프레임 패널에서 목록 탐색 및 자동 뷰포트 이동
+- [x] **PDF 내보내기:** 프레임 패널의 FileDown 버튼으로 모든 프레임을 순서대로 PDF 페이지로 저장 (jsPDF 사용)
+- [x] **타임라인 플레이백:** 서버가 최대 500개의 변경 스냅샷을 기록, 타임라인 플레이어로 재생/일시정지/슬라이더 스크럽 가능
+- [x] **사용자 권한 관리 (Host System):** 방에 첫 입장자가 방장(👑)으로 자동 지정, 방장은 다른 사용자를 편집/보기 전용으로 전환 가능
+- [x] **WebRTC 음성 채팅:** 브라우저 네이티브 WebRTC + STUN 서버 기반 P2P 오디오 통화 — 방에서 참여/퇴장, 마이크 뮤트/언뮤트 지원
