@@ -76,6 +76,7 @@ A real-time collaborative whiteboard web application built with React, Konva.js,
 - [x] **우클릭 컨텍스트 메뉴:** 선택된 요소 위에서 우클릭 시 복사/붙여넣기, 레이어 정렬, 그룹화, 잠금 등을 제어할 수 있는 팝업 메뉴 제공
 - [x] **렌더링 최적화:** `useMemo` / `useCallback` 전면 적용 — 테마, 미니맵 계산, 선택 박스, 마우스 핸들러 등 매 렌더 재생성 방지
 - [x] **파일 구조 분리 (Phase 2):** `useBoardUI` (도구·스타일·토스트·테마) 및 `useViewport` (줌·패닝·좌표 변환) 커스텀 훅 분리 — Board.tsx 로직 모듈화
+- [x] **파일 구조 분리 (Phase 3):** `useCanvasEvents` 커스텀 훅 분리 — `handleMouseDown/Move/Up/DblClick` 캔버스 이벤트 핸들러 일괄 이동
 
 ## 🗂 Project Structure
 

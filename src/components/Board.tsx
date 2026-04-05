@@ -12,14 +12,14 @@ import {
 import { io } from 'socket.io-client';
 import type { DrawElement, Bounds } from '../utils/elementHelpers';
 import {
-  generateId, getElementBounds, getElementAtPoint, getElementsInRect, moveElementBy,
-  smoothPoints, simplifyPoints, detectSmartShape,
+  generateId, getElementBounds, moveElementBy,
 } from '../utils/elementHelpers';
 import { useHistory } from '../hooks/useHistory';
 import { useSocketEvents } from '../hooks/useSocketEvents';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { useBoardUI } from '../hooks/useBoardUI';
 import { useViewport } from '../hooks/useViewport';
+import { useCanvasEvents } from '../hooks/useCanvasEvents';
 import { renderElement } from '../utils/renderElement';
 import LoginScreen from './LoginScreen';
 import HelpModal from './HelpModal';
@@ -570,244 +570,24 @@ export default function Board() {
     setTextInput(null);
   };
 
-  // ── 캔버스 이벤트 ──
-  const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (contextMenu) setContextMenu(null); // 메뉴 닫기
-
-    const stage = e.target.getStage();
-    if (!stage) return;
-
-    if (e.evt.button === 1 || spaceHeldRef.current) {
-      isPanning.current = true;
-      panStart.current = { mx: e.evt.clientX, my: e.evt.clientY, sx: stagePosRef.current.x, sy: stagePosRef.current.y };
-      return;
-    }
-
-    const pos = getCanvasPos(stage);
-    if (!pos) return;
-
-    if (isEmojiMode) {
-      const reactionId = generateId();
-      const reaction: EmojiReaction = { id: reactionId, x: pos.x, y: pos.y, emoji: selectedEmoji, nickname };
-      setEmojiReactions((p) => [...p, reaction]);
-      setTimeout(() => setEmojiReactions((p) => p.filter((r) => r.id !== reactionId)), 1800);
-      socket.emit('emoji_reaction', reaction);
-      return;
-    }
-
-    if (isViewOnly) return;
-
-    if (tool === 'text') {
-      commitText();
-      setTextInput({ x: snap(pos.x), y: snap(pos.y), value: '' });
-      return;
-    }
-
-    if (tool === 'select') {
-      const idx = getElementAtPoint(elements, pos.x, pos.y);
-      if (idx === null) {
-        if (!e.evt.shiftKey) setSelectedIndices(new Set());
-        isBoxSelecting.current = true;
-        boxSelectStart.current = pos;
-        setBoxSelectRect({ x: pos.x, y: pos.y, width: 0, height: 0 });
-      } else {
-        if (e.evt.shiftKey) {
-          setSelectedIndices((prev) => {
-            const next = new Set(prev);
-            if (next.has(idx)) { next.delete(idx); } else { next.add(idx); }
-            return next;
-          });
-        } else {
-          let baseIdx = idx;
-          let newSel: Set<number>;
-          if (selectedIndices.has(idx)) {
-            newSel = selectedIndices;
-          } else {
-            newSel = new Set([idx]);
-            const clickedGroupId = elements[idx]?.groupId;
-            if (clickedGroupId) {
-              elements.forEach((el, i) => {
-                if (el.groupId === clickedGroupId) newSel.add(i);
-              });
-            }
-            baseIdx = idx;
-          }
-          setSelectedIndices(newSel);
-          isDraggingSelected.current = true;
-          dragStartPos.current = pos;
-          void baseIdx;
-          dragOriginals.current = [...newSel].filter(i => !elements[i]?.locked).map((i) => ({
-            idx: i,
-            el: { ...elements[i], points: [...elements[i].points] },
-          }));
-        }
-      }
-      return;
-    }
-
-    isDrawing.current = true;
-    const newEl: DrawElement = {
-      id: generateId(), tool,
-      points: ['pen', 'eraser'].includes(tool) ? [snap(pos.x), snap(pos.y)] : [snap(pos.x), snap(pos.y), snap(pos.x), snap(pos.y)],
-      color: currentColor, strokeWidth,
-      filled: isFilled, dash: currentDash, opacity: currentOpacity,
-      ...(tool === 'sticky' ? { stickyBg } : {}),
-    };
-    
-    setElements((prev) => {
-      const upd = [...prev, newEl];
-      socket.emit('update_element', newEl);
-      return upd;
-    });
-  };
-
-  const handleMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (isPanning.current && panStart.current) {
-      const dx = e.evt.clientX - panStart.current.mx;
-      const dy = e.evt.clientY - panStart.current.my;
-      setStagePos({ x: panStart.current.sx + dx, y: panStart.current.sy + dy });
-      return;
-    }
-
-    const stage = e.target.getStage();
-    if (!stage) return;
-    const point = getCanvasPos(stage);
-    if (!point) return;
-
-    const now = Date.now();
-    if (now - lastCursorEmit.current > 50) {
-      socket.emit('cursor_move', { x: point.x, y: point.y });
-      lastCursorEmit.current = now;
-    }
-
-    if (toolRef.current === 'select') {
-      if (isDraggingSelected.current && dragStartPos.current && dragOriginals.current.length) {
-        const dx = snap(point.x) - snap(dragStartPos.current.x);
-        const dy = snap(point.y) - snap(dragStartPos.current.y);
-        setElements((prev) => {
-          const upd = [...prev];
-          dragOriginals.current.forEach(({ idx, el }) => {
-            if (idx < upd.length) {
-              const moved = moveElementBy(el, dx, dy);
-              upd[idx] = moved;
-              socket.emit('update_element', moved); // 이동 중인 요소들 브로드캐스트
-            }
-          });
-          return upd;
-        });
-      } else if (isBoxSelecting.current && boxSelectStart.current) {
-        const r: Bounds = {
-          x: boxSelectStart.current.x,
-          y: boxSelectStart.current.y,
-          width: point.x - boxSelectStart.current.x,
-          height: point.y - boxSelectStart.current.y,
-        };
-        setBoxSelectRect(r);
-        const inRect = getElementsInRect(elementsRef.current, r.x, r.y, r.width, r.height);
-        setSelectedIndices(new Set(inRect));
-      }
-      return;
-    }
-
-    if (!isDrawing.current) return;
-
-    setElements((prev) => {
-      if (prev.length === 0) return prev;
-      const upd = [...prev];
-      const last = { ...upd[upd.length - 1] };
-      if (last.tool === 'pen' || last.tool === 'eraser') {
-        last.points = [...last.points, snap(point.x), snap(point.y)];
-      } else {
-        last.points = [last.points[0], last.points[1], snap(point.x), snap(point.y)];
-      }
-      upd[upd.length - 1] = last;
-      socket.emit('update_element', last); 
-      return upd;
-    });
-  }, [getCanvasPos, snap, lastCursorEmit, setStagePos, toolRef]);
-
-  const handleMouseUp = useCallback(() => {
-    if (isPanning.current) { isPanning.current = false; panStart.current = null; return; }
-
-    if (toolRef.current === 'select') {
-      if (isDraggingSelected.current) {
-        isDraggingSelected.current = false; dragStartPos.current = null; dragOriginals.current = [];
-        setElements((latest) => { saveHistoryWith(latest); return latest; });
-      }
-      if (isBoxSelecting.current) {
-        isBoxSelecting.current = false; boxSelectStart.current = null;
-        setBoxSelectRect(null);
-      }
-      return;
-    }
-
-    if (!isDrawing.current) return;
-    isDrawing.current = false;
-
-    if (toolRef.current === 'sticky') {
-      setElements((latest) => {
-        saveHistoryWith(latest);
-        const last = latest[latest.length - 1];
-        if (last?.tool === 'sticky' && last.points.length >= 4) {
-          const nx = Math.min(last.points[0], last.points[2]) + 8;
-          const ny = Math.min(last.points[1], last.points[3]) + 8;
-          setTextInput({ x: nx, y: ny, value: '', targetIdx: latest.length - 1 });
-        }
-        return latest;
-      });
-      return;
-    }
-
-    setElements((latest) => {
-      if (latest.length === 0) { saveHistoryWith(latest); return latest; }
-      const last = latest[latest.length - 1];
-
-      if (last.tool === 'pen' && (isSmartShapeRef.current || isSmoothingRef.current)) {
-        const upd = [...latest];
-        if (isSmartShapeRef.current) {
-          const detected = detectSmartShape(last);
-          if (detected) {
-            upd[upd.length - 1] = detected;
-            saveHistoryWith(upd);
-            socket.emit('update_element', detected);
-            setTimeout(() => showToast('도형이 자동 인식되었습니다 ✨', 'info'), 0);
-            return upd;
-          }
-        }
-        if (isSmoothingRef.current && last.points.length > 6) {
-          const simplified = simplifyPoints(last.points, 3);
-          const smoothed = smoothPoints(simplified, 3);
-          const newEl = { ...last, points: smoothed };
-          upd[upd.length - 1] = newEl;
-          socket.emit('update_element', newEl);
-        }
-        saveHistoryWith(upd);
-        return upd;
-      }
-
-      saveHistoryWith(latest);
-      return latest;
-    });
-  }, [saveHistoryWith, showToast, toolRef, isSmartShapeRef, isSmoothingRef]);
-
-  const handleDblClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (tool !== 'select') return;
-    const stage = e.target.getStage();
-    if (!stage) return;
-    const pos = getCanvasPos(stage);
-    if (!pos) return;
-    const idx = getElementAtPoint(elements, pos.x, pos.y);
-    if (idx === null) return;
-    const el = elements[idx];
-    if (el.locked) return;
-    if (el.tool === 'text') {
-      setTextInput({ x: el.points[0], y: el.points[1], value: el.text || '', targetIdx: idx });
-    } else if (el.tool === 'sticky') {
-      const nx = Math.min(el.points[0], el.points[2]) + 8;
-      const ny = Math.min(el.points[1], el.points[3]) + 8;
-      setTextInput({ x: nx, y: ny, value: el.text || '', targetIdx: idx });
-    }
-  };
+  // ── 캔버스 이벤트 훅 ──
+  const { handleMouseDown, handleMouseMove, handleMouseUp, handleDblClick } = useCanvasEvents({
+    // Refs
+    isDrawing, isPanning, panStart, spaceHeldRef, stagePosRef,
+    isBoxSelecting, boxSelectStart, isDraggingSelected, dragStartPos, dragOriginals,
+    elementsRef, toolRef, isSmoothingRef, isSmartShapeRef, lastCursorEmit,
+    // State
+    contextMenu, elements, selectedIndices, tool,
+    isEmojiMode, selectedEmoji, nickname, isViewOnly,
+    currentColor, strokeWidth, isFilled, currentDash, currentOpacity, stickyBg,
+    // Setters
+    setContextMenu, setEmojiReactions, setTextInput,
+    setElements, setSelectedIndices, setBoxSelectRect, setStagePos,
+    // Functions
+    getCanvasPos, snap, commitText, saveHistoryWith, showToast,
+    // Socket
+    socket,
+  });
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
