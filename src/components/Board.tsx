@@ -52,8 +52,8 @@ const getCursorColor = (id: string) => {
 export default function Board() {
   // ── 상태 ──
   const [isJoined, setIsJoined] = useState(false);
-  const [roomId, setRoomId] = useState(() => new URLSearchParams(window.location.search).get('room') || 'main');
   const [nickname, setNickname] = useState('');
+  const [roomId, setRoomId] = useState(() => new URLSearchParams(window.location.search).get('room') || 'main');
   const [elements, setElements] = useState<DrawElement[]>([]);
   const [currentColor, setCurrentColor] = useState(COLORS[0]);
   const [tool, setTool] = useState<ToolType>('pen');
@@ -76,9 +76,10 @@ export default function Board() {
   const [stageSize, setStageSize] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [cursors, setCursors] = useState<Record<string, CursorData>>({});
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
-  // 선택
+  // 선택 및 우클릭 메뉴
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [boxSelectRect, setBoxSelectRect] = useState<Bounds | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   // 줌/패닝
   const [stageScale, setStageScale] = useState(1);
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
@@ -91,10 +92,10 @@ export default function Board() {
   const [isSnapEnabled, setIsSnapEnabled] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [, setImageLoadTick] = useState(0); // 이미지 로딩 후 강제 리렌더
+  const [, setImageLoadTick] = useState(0);
   // 다크 모드
   const [isDarkMode, setIsDarkMode] = useState(false);
-  // 최근 사용 색상 (최대 5개)
+  // 최근 사용 색상
   const [recentColors, setRecentColors] = useState<string[]>([]);
   // 토스트 알림
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -123,10 +124,12 @@ export default function Board() {
   const clipboard = useRef<DrawElement | null>(null);
   const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
   const elementsRef = useRef<DrawElement[]>([]);
+  
   // ── 히스토리 훅 ──
   const { saveHistoryWith, handleUndo, handleRedo, historyRef, historyStepRef } = useHistory(
     setElements, setSelectedIndices, socket,
   );
+  
   const selectedIndicesRef = useRef<Set<number>>(new Set());
   const stagePosRef = useRef({ x: 0, y: 0 });
   const stageScaleRef = useRef(1);
@@ -160,7 +163,7 @@ export default function Board() {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   };
 
-  // ── 색상 선택 (최근 색상 기록) ──
+  // ── 색상 선택 ──
   const selectColor = (color: string) => {
     setCurrentColor(color);
     if (tool === 'eraser') setTool('pen');
@@ -183,8 +186,6 @@ export default function Board() {
   isSmartShapeRef.current = isSmartShape;
 
   // ── 좌표 변환 ──
-
-  /** Stage 포인터 위치 → 캔버스 좌표 */
   const getCanvasPos = (stage: Konva.Stage): { x: number; y: number } | null => {
     const p = stage.getPointerPosition();
     if (!p) return null;
@@ -194,14 +195,17 @@ export default function Board() {
     };
   };
 
-  /** 캔버스 좌표 → 화면 좌표 */
   const canvasToScreen = (cx: number, cy: number) => ({
     x: cx * stageScale + stagePos.x,
     y: cy * stageScale + stagePos.y,
   });
 
-  // ── 선택 관련 ──
+  const screenToCanvas = (sx: number, sy: number) => ({
+    x: (sx - stagePosRef.current.x) / stageScaleRef.current,
+    y: (sy - stagePosRef.current.y) / stageScaleRef.current,
+  });
 
+  // ── 선택 관련 ──
   const deleteSelected = () => {
     const idxSet = selectedIndicesRef.current;
     if (idxSet.size === 0) return;
@@ -209,7 +213,7 @@ export default function Board() {
     setElements(updated);
     setSelectedIndices(new Set());
     saveHistoryWith(updated);
-    socket.emit('draw_line', updated);
+    socket.emit('draw_line', updated); // 다중 삭제는 전체 동기화로 처리
   };
 
   const copySelected = () => {
@@ -218,9 +222,17 @@ export default function Board() {
     clipboard.current = { ...elementsRef.current[idx], points: [...elementsRef.current[idx].points] };
   };
 
+  const pasteClipboard = () => {
+    if (!clipboard.current) return;
+    const pasted = { ...clipboard.current, id: generateId(), points: clipboard.current.points.map((p) => p + 20) };
+    const updated = [...elementsRef.current, pasted];
+    setElements(updated);
+    setSelectedIndices(new Set([updated.length - 1]));
+    saveHistoryWith(updated);
+    socket.emit('update_element', pasted);
+  };
 
   // ── 레이어 관리 (단일 선택 시) ──
-
   const singleIdx = selectedIndices.size === 1 ? [...selectedIndices][0] : null;
 
   const bringToFront = () => {
@@ -255,7 +267,6 @@ export default function Board() {
   };
 
   // ── 정렬 ──
-
   const alignElements = (dir: 'left' | 'centerH' | 'right' | 'top' | 'middleV' | 'bottom') => {
     const idxs = [...selectedIndicesRef.current];
     if (idxs.length < 2) return;
@@ -293,7 +304,6 @@ export default function Board() {
   };
 
   // ── 잠금/해제 ──
-
   const toggleLock = () => {
     const idxs = [...selectedIndicesRef.current];
     if (idxs.length === 0) return;
@@ -305,7 +315,6 @@ export default function Board() {
   };
 
   // ── 그룹화 / 해제 ──
-
   const handleGroup = () => {
     const idxs = [...selectedIndicesRef.current];
     if (idxs.length < 2) return;
@@ -320,7 +329,6 @@ export default function Board() {
   const handleUngroup = () => {
     const idxs = [...selectedIndicesRef.current];
     if (idxs.length === 0) return;
-    // 선택된 요소들의 groupId를 가진 모든 요소를 함께 해제
     const groupIds = new Set(idxs.map(i => elementsRef.current[i]?.groupId).filter(Boolean));
     const upd = elementsRef.current.map((el) =>
       (el.groupId && groupIds.has(el.groupId)) ? { ...el, groupId: undefined } : el
@@ -330,7 +338,6 @@ export default function Board() {
   };
 
   // ── 내보내기 / 가져오기 ──
-
   const handleDownloadPNG = () => {
     if (!stageRef.current) return;
     const uri = stageRef.current.toDataURL({ pixelRatio: 2 });
@@ -379,28 +386,37 @@ export default function Board() {
       };
       setElements((prev) => {
         const updated = [...prev, newEl];
-        saveHistoryWith(updated); socket.emit('draw_line', updated);
+        saveHistoryWith(updated); 
+        socket.emit('update_element', newEl);
         return updated;
       });
       setImageLoadTick((t) => t + 1);
     };
   };
 
-  const handleImageFile = (file: File, dropPos?: { x: number; y: number }) => {
+  // 📌 API 기반 이미지 업로드 (Multer 연동)
+  const handleImageFile = async (file: File, dropPos?: { x: number; y: number }) => {
     if (!file.type.startsWith('image/')) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const dataUrl = ev.target?.result as string;
-      const pos = dropPos ?? screenToCanvas(stageSize.width / 2, stageSize.height / 2);
-      insertImage(dataUrl, pos.x, pos.y);
-    };
-    reader.readAsDataURL(file);
-  };
+    const pos = dropPos ?? screenToCanvas(stageSize.width / 2, stageSize.height / 2);
+    
+    const formData = new FormData();
+    formData.append('image', file);
 
-  const screenToCanvas = (sx: number, sy: number) => ({
-    x: (sx - stagePosRef.current.x) / stageScaleRef.current,
-    y: (sy - stagePosRef.current.y) / stageScaleRef.current,
-  });
+    try {
+      showToast('이미지 업로드 중...', 'info');
+      const res = await fetch('http://localhost:3001/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      if (data.url) {
+        insertImage(data.url, pos.x, pos.y);
+      }
+    } catch (err) {
+      console.error(err);
+      showToast('이미지 업로드에 실패했습니다.', 'leave');
+    }
+  };
 
   // ── 전체 요소 보기 (Zoom to Fit) ──
   const handleZoomToFit = () => {
@@ -423,12 +439,9 @@ export default function Board() {
     setStagePos({ x: (w - cw * newScale) / 2 - minX * newScale, y: (h - ch * newScale) / 2 - minY * newScale });
   };
 
-  /** 그리드 스냅 (28px 격자) */
   const snap = (v: number) => isSnapEnabledRef.current ? Math.round(v / 28) * 28 : v;
 
   // ── Effects ──
-
-  // 이미지 프리로드
   useEffect(() => {
     const unloaded = elements.filter(
       (el) => el.tool === 'image' && el.imageDataUrl && !imageCache.current.has(el.imageDataUrl),
@@ -446,14 +459,12 @@ export default function Board() {
     });
   }, [elements]);
 
-  // 창 크기
   useEffect(() => {
     const h = () => setStageSize({ width: window.innerWidth, height: window.innerHeight });
     window.addEventListener('resize', h);
     return () => window.removeEventListener('resize', h);
   }, []);
 
-  // 뷰포트 변경 시 브로드캐스트 (Follow Me)
   useEffect(() => {
     if (!isJoined) return;
     const now = Date.now();
@@ -462,8 +473,7 @@ export default function Board() {
     socket.emit('viewport_update', { scale: stageScale, x: stagePos.x, y: stagePos.y });
   }, [stageScale, stagePos, isJoined]);
 
-  // 마우스 업 (캔버스 밖)
-useEffect(() => {
+  useEffect(() => {
     const up = () => {
       if (isPanning.current) {
         isPanning.current = false; panStart.current = null; return;
@@ -472,7 +482,7 @@ useEffect(() => {
         isDraggingSelected.current = false; dragStartPos.current = null; dragOriginals.current = [];
         const cur = elementsRef.current;
         saveHistoryWith(cur);
-        socket.emit('draw_line', cur);
+        socket.emit('draw_line', cur); // 드래그 종료 시 전체 동기화로 묶어줌
         return;
       }
       if (isBoxSelecting.current) {
@@ -484,7 +494,6 @@ useEffect(() => {
       isDrawing.current = false;
       setElements((latest) => { saveHistoryWith(latest); return latest; });
     };
-    
     const upAll = (e: MouseEvent) => { if (e.button === 1 && isPanning.current) { isPanning.current = false; panStart.current = null; } };
     window.addEventListener('mouseup', up);
     window.addEventListener('mouseup', upAll);
@@ -492,7 +501,6 @@ useEffect(() => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 스페이스바 (패닝 모드)
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.code === 'Space' && !e.repeat) {
@@ -516,7 +524,6 @@ useEffect(() => {
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
   }, []);
 
-  // ── 키보드 단축키 훅 ──
   useKeyboardShortcuts({
     socket, elementsRef, selectedIndicesRef, showHelpRef, clipboard,
     setElements, setSelectedIndices, setTool, setShowHelp,
@@ -525,7 +532,6 @@ useEffect(() => {
     saveHistoryWith,
   });
 
-  // ── 소켓 이벤트 훅 ──
   useSocketEvents({
     socket, setElements, setSelectedIndices,
     setUsers, setMessages, setCursors,
@@ -535,10 +541,8 @@ useEffect(() => {
     followingUserRef, historyRef, historyStepRef,
   });
 
-  // 채팅 자동 스크롤
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-  // 마우스 휠 줌 (passive:false 필요)
   useEffect(() => {
     const el = stageRef.current?.container();
     if (!el) return;
@@ -549,55 +553,31 @@ useEffect(() => {
       if (!stage) return;
       const pointer = stage.getPointerPosition()!;
       const scaleBy = 1.08;
-      const newScale = e.deltaY < 0
-        ? Math.min(oldScale * scaleBy, 10)
-        : Math.max(oldScale / scaleBy, 0.05);
+      const newScale = e.deltaY < 0 ? Math.min(oldScale * scaleBy, 10) : Math.max(oldScale / scaleBy, 0.05);
       const origin = {
         x: (pointer.x - stagePosRef.current.x) / oldScale,
         y: (pointer.y - stagePosRef.current.y) / oldScale,
       };
       setStageScale(newScale);
-      setStagePos({
-        x: pointer.x - origin.x * newScale,
-        y: pointer.y - origin.y * newScale,
-      });
+      setStagePos({ x: pointer.x - origin.x * newScale, y: pointer.y - origin.y * newScale });
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [isJoined]); // isJoined가 바뀔 때 Stage가 마운트됨
+  }, [isJoined]);
 
   // ── 핸들러 ──
+  const handleJoin = (viewOnly = false) => {
+    const name = viewOnly ? '관람자' : nickname.trim();
+    if (!name || !roomId.trim()) return;
+    if (viewOnly) {
+      setNickname('관람자');
+      setIsViewOnly(true);
+    }
+    window.history.pushState({}, '', `?room=${roomId}`);
+    socket.emit('join_room', { nickname: name, room: roomId });
+    setIsJoined(true);
+  };
 
-const handleJoin = (viewOnly = false) => {
-  const name = viewOnly ? '관람자' : nickname.trim();
-  if (!name || !roomId.trim()) return;
-  if (viewOnly) {
-    setNickname('관람자');
-    setIsViewOnly(true);
-  }
-  
-  // URL을 자동으로 변경하여 공유하기 쉽게 만듬
-  window.history.pushState({}, '', `?room=${roomId}`);
-  
-  // 기존 'set_nickname' 대신 'join_room' 발송
-  socket.emit('join_room', { nickname: name, room: roomId });
-  setIsJoined(true);
-};
-
-// 3. 렌더링 영역: LoginScreen 호출부 교체
-if (!isJoined) {
-    return (
-      <LoginScreen
-        isDarkMode={isDarkMode} 
-        setIsDarkMode={setIsDarkMode}
-        nickname={nickname} 
-        setNickname={setNickname}
-        roomId={roomId}
-        setRoomId={setRoomId}
-        onJoin={handleJoin}
-      />
-    );
-  }
   const handleSendMessage = () => {
     if (!inputText.trim()) return;
     socket.emit('send_message', {
@@ -618,11 +598,11 @@ if (!isJoined) {
   const commitText = () => {
     if (!textInput) return;
     if (textInput.targetIdx !== undefined) {
-      // 스티커 메모 텍스트 업데이트
       setElements((prev) => {
         const upd = [...prev];
         upd[textInput.targetIdx!] = { ...upd[textInput.targetIdx!], text: textInput.value };
-        saveHistoryWith(upd); socket.emit('draw_line', upd);
+        saveHistoryWith(upd); 
+        socket.emit('update_element', upd[textInput.targetIdx!]);
         return upd;
       });
     } else if (textInput.value.trim()) {
@@ -635,7 +615,8 @@ if (!isJoined) {
       };
       setElements((prev) => {
         const upd = [...prev, newEl];
-        saveHistoryWith(upd); socket.emit('draw_line', upd);
+        saveHistoryWith(upd); 
+        socket.emit('update_element', newEl);
         return upd;
       });
     }
@@ -643,12 +624,12 @@ if (!isJoined) {
   };
 
   // ── 캔버스 이벤트 ──
-
   const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (contextMenu) setContextMenu(null); // 메뉴 닫기
+
     const stage = e.target.getStage();
     if (!stage) return;
 
-    // 중간 버튼 또는 스페이스바 → 패닝
     if (e.evt.button === 1 || spaceHeldRef.current) {
       isPanning.current = true;
       panStart.current = { mx: e.evt.clientX, my: e.evt.clientY, sx: stagePosRef.current.x, sy: stagePosRef.current.y };
@@ -658,7 +639,6 @@ if (!isJoined) {
     const pos = getCanvasPos(stage);
     if (!pos) return;
 
-    // 이모지 반응 모드
     if (isEmojiMode) {
       const reactionId = generateId();
       const reaction: EmojiReaction = { id: reactionId, x: pos.x, y: pos.y, emoji: selectedEmoji, nickname };
@@ -668,27 +648,22 @@ if (!isJoined) {
       return;
     }
 
-    // 읽기 전용: 그리기 불가
     if (isViewOnly) return;
 
-    // 텍스트 도구
     if (tool === 'text') {
       commitText();
       setTextInput({ x: snap(pos.x), y: snap(pos.y), value: '' });
       return;
     }
 
-    // 선택 도구
     if (tool === 'select') {
       const idx = getElementAtPoint(elements, pos.x, pos.y);
       if (idx === null) {
-        // 빈 공간 클릭 → 박스 선택 시작
         if (!e.evt.shiftKey) setSelectedIndices(new Set());
         isBoxSelecting.current = true;
         boxSelectStart.current = pos;
         setBoxSelectRect({ x: pos.x, y: pos.y, width: 0, height: 0 });
       } else {
-        // 요소 클릭
         if (e.evt.shiftKey) {
           setSelectedIndices((prev) => {
             const next = new Set(prev);
@@ -696,7 +671,6 @@ if (!isJoined) {
             return next;
           });
         } else {
-          // 그룹 소속 여부 확인: 그룹이면 전체 그룹 선택
           let baseIdx = idx;
           let newSel: Set<number>;
           if (selectedIndices.has(idx)) {
@@ -712,7 +686,6 @@ if (!isJoined) {
             baseIdx = idx;
           }
           setSelectedIndices(newSel);
-          // 드래그 준비
           isDraggingSelected.current = true;
           dragStartPos.current = pos;
           void baseIdx;
@@ -725,7 +698,6 @@ if (!isJoined) {
       return;
     }
 
-// 📌 그리기 도구 시작 부분 (함수 맨 아래쪽)
     isDrawing.current = true;
     const newEl: DrawElement = {
       id: generateId(), tool,
@@ -734,7 +706,8 @@ if (!isJoined) {
       filled: isFilled, dash: currentDash, opacity: currentOpacity,
       ...(tool === 'sticky' ? { stickyBg } : {}),
     };
-setElements((prev) => {
+    
+    setElements((prev) => {
       const upd = [...prev, newEl];
       socket.emit('update_element', newEl);
       return upd;
@@ -742,7 +715,6 @@ setElements((prev) => {
   };
 
   const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    // 패닝
     if (isPanning.current && panStart.current) {
       const dx = e.evt.clientX - panStart.current.mx;
       const dy = e.evt.clientY - panStart.current.my;
@@ -755,14 +727,12 @@ setElements((prev) => {
     const point = getCanvasPos(stage);
     if (!point) return;
 
-    // 커서 브로드캐스트 (캔버스 좌표로 전송)
     const now = Date.now();
     if (now - lastCursorEmit.current > 50) {
       socket.emit('cursor_move', { x: point.x, y: point.y });
       lastCursorEmit.current = now;
     }
 
-    // 선택 드래그
     if (tool === 'select') {
       if (isDraggingSelected.current && dragStartPos.current && dragOriginals.current.length) {
         const dx = snap(point.x) - snap(dragStartPos.current.x);
@@ -770,9 +740,12 @@ setElements((prev) => {
         setElements((prev) => {
           const upd = [...prev];
           dragOriginals.current.forEach(({ idx, el }) => {
-            if (idx < upd.length) upd[idx] = moveElementBy(el, dx, dy);
+            if (idx < upd.length) {
+              const moved = moveElementBy(el, dx, dy);
+              upd[idx] = moved;
+              socket.emit('update_element', moved); // 이동 중인 요소들 브로드캐스트
+            }
           });
-          socket.emit('draw_line', upd);
           return upd;
         });
       } else if (isBoxSelecting.current && boxSelectStart.current) {
@@ -791,22 +764,17 @@ setElements((prev) => {
 
     if (!isDrawing.current) return;
 
-setElements((prev) => {
+    setElements((prev) => {
       if (prev.length === 0) return prev;
       const upd = [...prev];
       const last = { ...upd[upd.length - 1] };
-      
       if (last.tool === 'pen' || last.tool === 'eraser') {
         last.points = [...last.points, snap(point.x), snap(point.y)];
       } else {
         last.points = [last.points[0], last.points[1], snap(point.x), snap(point.y)];
       }
-      
       upd[upd.length - 1] = last;
-      
-      // 📌 렉 유발 원인이었던 draw_line (전체 배열 전송) 대신 update_element (단일 객체 전송)로 변경!
       socket.emit('update_element', last); 
-      
       return upd;
     });
   };
@@ -817,7 +785,7 @@ setElements((prev) => {
     if (tool === 'select') {
       if (isDraggingSelected.current) {
         isDraggingSelected.current = false; dragStartPos.current = null; dragOriginals.current = [];
-        setElements((latest) => { saveHistoryWith(latest); socket.emit('draw_line', latest); return latest; });
+        setElements((latest) => { saveHistoryWith(latest); return latest; });
       }
       if (isBoxSelecting.current) {
         isBoxSelecting.current = false; boxSelectStart.current = null;
@@ -829,7 +797,6 @@ setElements((prev) => {
     if (!isDrawing.current) return;
     isDrawing.current = false;
 
-    // 스티커 메모 완성 → 텍스트 입력 모드
     if (tool === 'sticky') {
       setElements((latest) => {
         saveHistoryWith(latest);
@@ -848,29 +815,26 @@ setElements((prev) => {
       if (latest.length === 0) { saveHistoryWith(latest); return latest; }
       const last = latest[latest.length - 1];
 
-      // 펜 도구일 때 스무딩 / 도형 자동 인식 적용
       if (last.tool === 'pen' && (isSmartShapeRef.current || isSmoothingRef.current)) {
         const upd = [...latest];
-
         if (isSmartShapeRef.current) {
           const detected = detectSmartShape(last);
           if (detected) {
             upd[upd.length - 1] = detected;
             saveHistoryWith(upd);
-            socket.emit('draw_line', upd);
+            socket.emit('update_element', detected);
             setTimeout(() => showToast('도형이 자동 인식되었습니다 ✨', 'info'), 0);
             return upd;
           }
         }
-
         if (isSmoothingRef.current && last.points.length > 6) {
           const simplified = simplifyPoints(last.points, 3);
           const smoothed = smoothPoints(simplified, 3);
-          upd[upd.length - 1] = { ...last, points: smoothed };
+          const newEl = { ...last, points: smoothed };
+          upd[upd.length - 1] = newEl;
+          socket.emit('update_element', newEl);
         }
-
         saveHistoryWith(upd);
-        socket.emit('draw_line', upd);
         return upd;
       }
 
@@ -879,7 +843,6 @@ setElements((prev) => {
     });
   };
 
-  // ── 텍스트/스티커 더블클릭 편집 ──
   const handleDblClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (tool !== 'select') return;
     const stage = e.target.getStage();
@@ -899,8 +862,6 @@ setElements((prev) => {
     }
   };
 
-  // ── 드래그 앤 드롭 이미지 ──
-
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
@@ -911,8 +872,6 @@ setElements((prev) => {
     handleImageFile(file, dropPos);
   };
 
-  // ── 커서 ──
-
   const getCursor = (): string => {
     if (isSpaceHeld) return isPanning.current ? 'grabbing' : 'grab';
     if (tool === 'eraser') return 'cell';
@@ -921,8 +880,7 @@ setElements((prev) => {
     return 'crosshair';
   };
 
-  // ── 선택 바운딩 박스 (Konva Rect로 렌더링) ──
-
+  // ── 선택 바운딩 박스 ──
   const selectionRects = [...selectedIndices].map((idx) => {
     if (idx >= elements.length) return null;
     const b = getElementBounds(elements[idx]);
@@ -936,7 +894,6 @@ setElements((prev) => {
     );
   });
 
-  // 그룹 바운딩 박스 렌더링 (그룹 소속 요소들의 합산 경계)
   const groupBoundsMap = new Map<string, Bounds>();
   [...selectedIndices].forEach((idx) => {
     if (idx >= elements.length) return;
@@ -964,10 +921,8 @@ setElements((prev) => {
       fill="rgba(245,158,11,0.04)" listening={false} cornerRadius={4} />
   ));
 
-  // 텍스트 입력 화면 좌표
   const textAreaScreen = textInput ? canvasToScreen(textInput.x, textInput.y) : null;
 
-  // ── 스타일 헬퍼 ──
   const toolBtn = (active: boolean): React.CSSProperties => ({
     background: 'none', border: 'none', cursor: 'pointer',
     color: active ? '#3b82f6' : theme.textSubtle, display: 'flex', alignItems: 'center', padding: '2px',
@@ -983,22 +938,65 @@ setElements((prev) => {
     color: active ? '#3b82f6' : theme.textMuted, fontSize: '13px', fontWeight: 'bold', lineHeight: 1,
   });
 
-  // ── 입장 화면 ──
-if (!isJoined) {
+  // ── 미니맵 (Minimap) 계산 로직 ──
+  const mapWidth = 200;
+  const mapHeight = 150;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  elements.forEach(el => {
+    const b = getElementBounds(el);
+    if (b) {
+      minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
+    }
+  });
+
+  if (minX === Infinity) { minX = 0; minY = 0; maxX = window.innerWidth; maxY = window.innerHeight; }
+
+  const mapPad = 500;
+  minX -= mapPad; minY -= mapPad; maxX += mapPad; maxY += mapPad;
+
+  const contentW = maxX - minX;
+  const contentH = maxY - minY;
+  const mapScale = Math.min(mapWidth / contentW, mapHeight / contentH);
+
+  const mapOffsetX = (mapWidth - contentW * mapScale) / 2;
+  const mapOffsetY = (mapHeight - contentH * mapScale) / 2;
+
+  const viewRectX = mapOffsetX + (-stagePos.x / stageScale - minX) * mapScale;
+  const viewRectY = mapOffsetY + (-stagePos.y / stageScale - minY) * mapScale;
+  const viewRectW = (window.innerWidth / stageScale) * mapScale;
+  const viewRectH = (window.innerHeight / stageScale) * mapScale;
+
+  const handleMinimapInteraction = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.buttons !== 1) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+
+    const canvasX = (clickX - mapOffsetX) / mapScale + minX;
+    const canvasY = (clickY - mapOffsetY) / mapScale + minY;
+
+    setStagePos({
+      x: -(canvasX * stageScale) + window.innerWidth / 2,
+      y: -(canvasY * stageScale) + window.innerHeight / 2
+    });
+  };
+
+  // ── 렌더링 ──
+  if (!isJoined) {
     return (
       <LoginScreen
         isDarkMode={isDarkMode} 
         setIsDarkMode={setIsDarkMode}
         nickname={nickname} 
         setNickname={setNickname}
-        roomId={roomId}       /* 👈 추가됨 */
-        setRoomId={setRoomId} /* 👈 추가됨 */
+        roomId={roomId}
+        setRoomId={setRoomId}
         onJoin={handleJoin}
       />
     );
   }
 
-  // ── 메인 ──
   return (
     <div
       style={{
@@ -1013,8 +1011,6 @@ if (!isJoined) {
       onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
       onDragLeave={() => setIsDragOver(false)}
     >
-
-      {/* 드래그 오버레이 */}
       {isDragOver && (
         <div style={{ position:'absolute', inset:0, zIndex:50, backgroundColor:'rgba(59,130,246,0.1)', border:'3px dashed #3b82f6', borderRadius:'8px', display:'flex', alignItems:'center', justifyContent:'center', pointerEvents:'none' }}>
           <div style={{ fontSize:'24px', color:'#3b82f6', fontWeight:'bold' }}>이미지를 여기에 놓으세요</div>
@@ -1023,7 +1019,6 @@ if (!isJoined) {
 
       {/* ── 상단 도구 모음 ── */}
       <div style={{ position:'absolute', top:'16px', left:'50%', transform:'translateX(-50%)', zIndex:10, display:'flex', flexDirection:'column', gap:'6px', alignItems:'center' }}>
-        {/* 펜 도구 세부 옵션 (펜 선택 시) */}
         {tool === 'pen' && !isViewOnly && (
           <div style={{ display:'flex', gap:'8px', padding:'5px 14px', backgroundColor: theme.panel, borderRadius:'10px', boxShadow: theme.shadow, alignItems:'center' }}>
             <span style={{ fontSize:'11px', color: theme.textMuted }}>펜 옵션</span>
@@ -1044,10 +1039,7 @@ if (!isJoined) {
           </div>
         )}
 
-        {/* 1행: 도구 */}
         <div style={{ display:'flex', gap:'12px', padding:'8px 16px', backgroundColor: theme.panel, borderRadius:'12px', boxShadow: theme.shadow, alignItems:'center' }}>
-
-          {/* 도구 선택 */}
           {!isViewOnly && (
           <div style={{ display:'flex', gap:'6px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
             <button onClick={() => { setTool('select'); setSelectedIndices(new Set()); }} title="선택 (S)" style={toolBtn(tool==='select')}><MousePointer size={22}/></button>
@@ -1063,7 +1055,6 @@ if (!isJoined) {
           </div>
           )}
 
-          {/* 이모지 반응 */}
           {!isViewOnly && (
             <div style={{ position:'relative', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
               <button
@@ -1092,7 +1083,6 @@ if (!isJoined) {
             </div>
           )}
 
-          {/* 채우기 */}
           {!isViewOnly && (
           <div style={{ borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
             <button onClick={() => setIsFilled(v => !v)} title={isFilled ? '채우기 ON' : '채우기 OFF'}
@@ -1102,7 +1092,6 @@ if (!isJoined) {
           </div>
           )}
 
-          {/* 색상 */}
           {!isViewOnly && (
           <div style={{ display:'flex', gap:'8px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px', alignItems:'center', flexWrap:'wrap', maxWidth:'260px' }}>
             <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
@@ -1116,7 +1105,6 @@ if (!isJoined) {
                 <div style={{ width:'22px', height:'22px', borderRadius:'50%', background:'conic-gradient(red,yellow,lime,cyan,blue,magenta,red)', border: !COLORS.includes(currentColor)&&tool!=='eraser' ? '3px solid #3b82f6' : `1px solid ${theme.border}` }} />
               </label>
             </div>
-            {/* 최근 사용 색상 */}
             {recentColors.length > 0 && (
               <div style={{ display:'flex', gap:'4px', alignItems:'center', borderLeft:`1px solid ${theme.border}`, paddingLeft:'6px' }}>
                 <span style={{ fontSize:'10px', color:theme.textSubtle, whiteSpace:'nowrap' }}>최근</span>
@@ -1126,7 +1114,6 @@ if (!isJoined) {
                 ))}
               </div>
             )}
-            {/* 스티커 배경 색 (sticky 선택 시) */}
             {tool === 'sticky' && (
               <div style={{ display:'flex', gap:'4px', alignItems:'center', borderLeft:`1px solid ${theme.border}`, paddingLeft:'8px' }}>
                 {STICKY_COLORS.map(c => (
@@ -1138,7 +1125,6 @@ if (!isJoined) {
           </div>
           )}
 
-          {/* 굵기 */}
           {!isViewOnly && (
           <div style={{ display:'flex', alignItems:'center', gap:'8px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
             <span style={{ fontSize:'11px', color:theme.textMuted, whiteSpace:'nowrap' }}>{tool==='text' ? '크기' : '굵기'}</span>
@@ -1147,7 +1133,6 @@ if (!isJoined) {
           </div>
           )}
 
-          {/* 선 스타일 */}
           {!isViewOnly && (
           <div style={{ display:'flex', gap:'4px', alignItems:'center', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
             <button style={dashBtn(currentDash==='solid')} onClick={() => setCurrentDash('solid')} title="실선">—</button>
@@ -1156,7 +1141,6 @@ if (!isJoined) {
           </div>
           )}
 
-          {/* 투명도 */}
           {!isViewOnly && (
           <div style={{ display:'flex', alignItems:'center', gap:'6px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
             <span style={{ fontSize:'11px', color:theme.textMuted }}>투명도</span>
@@ -1165,7 +1149,6 @@ if (!isJoined) {
           </div>
           )}
 
-          {/* 액션 버튼 */}
           <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
             {isViewOnly ? (
               <div style={{ display:'flex', alignItems:'center', gap:'6px', padding:'4px 10px', backgroundColor:'#fef3c7', border:'1px solid #f59e0b', borderRadius:'8px', color:'#92400e', fontSize:'12px', fontWeight:'bold' }}>
@@ -1252,9 +1235,9 @@ if (!isJoined) {
 
       {/* 접속자 목록 */}
       <div style={{ position:'absolute', top:'20px', right:'20px', zIndex:10, backgroundColor: theme.panel, padding:'14px', borderRadius:'12px', boxShadow: theme.shadow, width:'170px' }}>
-<div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', fontSize:'14px', fontWeight:'bold', color: theme.text }}>
-  <Users size={18}/> {roomId} 방 ({users.length}명)
-</div>
+        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', fontSize:'14px', fontWeight:'bold', color: theme.text }}>
+          <Users size={18}/> {roomId} 방 ({users.length}명)
+        </div>
         {users.map((u) => {
           const isMe = u.nickname === nickname;
           const isFollowing = followingUserId === u.id;
@@ -1318,7 +1301,30 @@ if (!isJoined) {
         )}
       </div>
 
-      {/* 다른 사용자 커서 (캔버스 → 화면 좌표 변환) */}
+      {/* 🗺️ 미니맵 (좌측 하단) */}
+      <div 
+        style={{ 
+          position: 'absolute', bottom: '20px', left: '20px', zIndex: 10, 
+          width: `${mapWidth}px`, height: `${mapHeight}px`, 
+          backgroundColor: theme.panel, borderRadius: '8px', 
+          boxShadow: theme.shadow, overflow: 'hidden', 
+          border: `1px solid ${theme.border}`, cursor: 'crosshair'
+        }}
+        onMouseDown={handleMinimapInteraction}
+        onMouseMove={handleMinimapInteraction}
+        title="드래그하여 이동"
+      >
+        <svg width="100%" height="100%">
+          {elements.map((el, i) => {
+            const b = getElementBounds(el);
+            if (!b) return null;
+            return <rect key={i} x={mapOffsetX + (b.x - minX) * mapScale} y={mapOffsetY + (b.y - minY) * mapScale} width={b.width * mapScale} height={b.height * mapScale} fill={el.color === 'transparent' ? '#ccc' : el.color} opacity={0.6} rx={2} />
+          })}
+          <rect x={viewRectX} y={viewRectY} width={viewRectW} height={viewRectH} stroke="#ef4444" strokeWidth="2" fill="rgba(239, 68, 68, 0.15)" />
+        </svg>
+      </div>
+
+      {/* 다른 사용자 커서 */}
       {Object.entries(cursors).map(([id, cur]) => {
         const sc = canvasToScreen(cur.x, cur.y);
         return (
@@ -1376,8 +1382,40 @@ if (!isJoined) {
         ))}
       </div>
 
-      {/* 단축키 도움말 모달 */}
       <HelpModal showHelp={showHelp} setShowHelp={setShowHelp} theme={theme} isDarkMode={isDarkMode} />
+
+      {/* 캔버스 우클릭 메뉴 */}
+      {contextMenu && (
+        <div
+          style={{
+            position: 'absolute',
+            left: contextMenu.x,
+            top: contextMenu.y,
+            zIndex: 100,
+            backgroundColor: theme.panel,
+            border: `1px solid ${theme.border}`,
+            borderRadius: '8px',
+            boxShadow: theme.shadow,
+            padding: '4px 0',
+            minWidth: '150px',
+            display: 'flex',
+            flexDirection: 'column'
+          }}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <button onClick={() => { copySelected(); setContextMenu(null); }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: theme.text }}>복사 (Ctrl+C)</button>
+          <button onClick={() => { pasteClipboard(); setContextMenu(null); }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: theme.text }}>붙여넣기 (Ctrl+V)</button>
+          <div style={{ height: '1px', backgroundColor: theme.border, margin: '4px 0' }} />
+          <button onClick={() => { bringToFront(); setContextMenu(null); }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: theme.text }}>맨 앞으로</button>
+          <button onClick={() => { sendToBack(); setContextMenu(null); }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: theme.text }}>맨 뒤로</button>
+          <div style={{ height: '1px', backgroundColor: theme.border, margin: '4px 0' }} />
+          <button onClick={() => { handleGroup(); setContextMenu(null); }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: theme.text }}>그룹화</button>
+          <button onClick={() => { handleUngroup(); setContextMenu(null); }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: theme.text }}>그룹 해제</button>
+          <button onClick={() => { toggleLock(); setContextMenu(null); }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: theme.text }}>잠금 / 해제</button>
+          <div style={{ height: '1px', backgroundColor: theme.border, margin: '4px 0' }} />
+          <button onClick={() => { deleteSelected(); setContextMenu(null); }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: '#ef4444' }}>삭제 (Del)</button>
+        </div>
+      )}
 
       {/* 캔버스 */}
       <Stage
@@ -1392,15 +1430,18 @@ if (!isJoined) {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onDblClick={handleDblClick}
+        onContextMenu={(e) => {
+          e.evt.preventDefault();
+          if (selectedIndices.size > 0) {
+            setContextMenu({ x: e.evt.clientX, y: e.evt.clientY });
+          }
+        }}
         style={{ cursor: getCursor() }}
       >
         <Layer>
           {elements.map((el, i) => renderElement(el, i, stageScale, imageCache))}
-          {/* 선택 박스 오버레이 */}
           {selectionRects}
-          {/* 그룹 바운딩 박스 */}
           {groupRects}
-          {/* 박스 선택 중 영역 표시 */}
           {boxSelectRect && (
             <Rect
               x={Math.min(boxSelectRect.x, boxSelectRect.x + boxSelectRect.width)}
