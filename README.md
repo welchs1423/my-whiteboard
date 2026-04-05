@@ -75,6 +75,7 @@ A real-time collaborative whiteboard web application built with React, Konva.js,
 - [x] **통신 최적화 (Incremental Sync):** 전체 배열 대신 변경된 단일 요소만 브로드캐스트하여 네트워크 부하 최소화
 - [x] **우클릭 컨텍스트 메뉴:** 선택된 요소 위에서 우클릭 시 복사/붙여넣기, 레이어 정렬, 그룹화, 잠금 등을 제어할 수 있는 팝업 메뉴 제공
 - [x] **렌더링 최적화:** `useMemo` / `useCallback` 전면 적용 — 테마, 미니맵 계산, 선택 박스, 마우스 핸들러 등 매 렌더 재생성 방지
+- [x] **파일 구조 분리 (Phase 2):** `useBoardUI` (도구·스타일·토스트·테마) 및 `useViewport` (줌·패닝·좌표 변환) 커스텀 훅 분리 — Board.tsx 로직 모듈화
 
 ## 🗂 Project Structure
 

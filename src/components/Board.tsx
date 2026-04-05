@@ -2,16 +2,15 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Stage, Layer, Rect } from 'react-konva';
 import Konva from 'konva';
 import {
-  Eraser, Pen, Trash2, Download, Users, MessageSquare, Send, Square, Circle,
-  Undo2, Redo2, Type, ArrowRight, Minus, PaintBucket, Grid2X2, ChevronDown,
-  MousePointer, ChevronsUp, ChevronUp, ChevronsDown, FileJson, Upload,
-  HelpCircle, ImageIcon, StickyNote, ZoomIn, ZoomOut, Copy,
+  Users, ChevronDown,
+  ChevronsUp, ChevronUp, ChevronsDown, ZoomIn, ZoomOut, Copy,
   AlignLeft, AlignCenter, AlignRight, AlignStartVertical, AlignCenterVertical, AlignEndVertical,
-  Lock, Unlock, Magnet, Sun, Moon, Triangle, Maximize2, Spline, Wand2,
+  Lock, Unlock, Maximize2,
   Group as GroupIcon, Ungroup as UngroupIcon,
+  Trash2,
 } from 'lucide-react';
 import { io } from 'socket.io-client';
-import type { DrawElement, ToolType, DashStyle, Bounds } from '../utils/elementHelpers';
+import type { DrawElement, Bounds } from '../utils/elementHelpers';
 import {
   generateId, getElementBounds, getElementAtPoint, getElementsInRect, moveElementBy,
   smoothPoints, simplifyPoints, detectSmartShape,
@@ -19,9 +18,14 @@ import {
 import { useHistory } from '../hooks/useHistory';
 import { useSocketEvents } from '../hooks/useSocketEvents';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
+import { useBoardUI } from '../hooks/useBoardUI';
+import { useViewport } from '../hooks/useViewport';
 import { renderElement } from '../utils/renderElement';
 import LoginScreen from './LoginScreen';
 import HelpModal from './HelpModal';
+import Toolbar from './Toolbar';
+import Minimap from './Minimap';
+import ChatPanel from './ChatPanel';
 
 const socket = io('http://localhost:3001');
 
@@ -30,17 +34,13 @@ const socket = io('http://localhost:3001');
 interface CursorData { x: number; y: number; nickname: string; }
 interface TextInputState { x: number; y: number; value: string; targetIdx?: number; }
 interface ChatMessage { text: string; sender: string; time: string; }
-interface Toast { id: string; message: string; type: 'join' | 'leave' | 'info'; }
 interface UserInfo { id: string; nickname: string; }
 interface EmojiReaction { id: string; x: number; y: number; emoji: string; nickname: string; }
 interface UserViewport { scale: number; x: number; y: number; nickname: string; }
 
 // ── 상수 ──────────────────────────────────────────────────────────────────
 
-const COLORS = ['#000000', '#ef4444', '#3b82f6', '#22c55e', '#f59e0b'];
 const CURSOR_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6'];
-const REACTION_EMOJIS = ['👍', '❤️', '😂', '🎉', '🔥', '😮', '👏', '✨'];
-const STICKY_COLORS = ['#fef08a', '#bbf7d0', '#bfdbfe', '#fecaca', '#e9d5ff', '#fed7aa'];
 
 const getCursorColor = (id: string) => {
   const hash = id.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
@@ -50,58 +50,64 @@ const getCursorColor = (id: string) => {
 // ── 컴포넌트 ─────────────────────────────────────────────────────────────────
 
 export default function Board() {
-  // ── 상태 ──
+  // ── UI 상태 훅 ──
+  const {
+    tool, setTool, toolRef,
+    currentColor, recentColors, selectColor,
+    strokeWidth, setStrokeWidth,
+    isFilled, setIsFilled,
+    currentDash, setCurrentDash,
+    currentOpacity, setCurrentOpacity,
+    stickyBg, setStickyBg,
+    isSmoothing, setIsSmoothing, isSmoothingRef,
+    isSmartShape, setIsSmartShape, isSmartShapeRef,
+    isEmojiMode, setIsEmojiMode,
+    selectedEmoji, setSelectedEmoji,
+    showEmojiPicker, setShowEmojiPicker,
+    showGrid, setShowGrid,
+    isChatOpen, setIsChatOpen,
+    isSnapEnabled, setIsSnapEnabled, isSnapEnabledRef,
+    showHelp, setShowHelp, showHelpRef,
+    isDragOver, setIsDragOver,
+    isDarkMode, setIsDarkMode,
+    toasts, showToast,
+    theme,
+  } = useBoardUI();
+
+  // ── 뷰포트 훅 ──
+  const {
+    stageScale, setStageScale,
+    stagePos, setStagePos,
+    isSpaceHeld, setIsSpaceHeld,
+    stageSize, setStageSize,
+    stagePosRef, stageScaleRef, spaceHeldRef,
+    lastViewportEmit, lastCursorEmit,
+    getCanvasPos, canvasToScreen, screenToCanvas,
+  } = useViewport();
+
+  // ── 세션 상태 ──
   const [isJoined, setIsJoined] = useState(false);
   const [nickname, setNickname] = useState('');
   const [roomId, setRoomId] = useState(() => new URLSearchParams(window.location.search).get('room') || 'main');
-  const [elements, setElements] = useState<DrawElement[]>([]);
-  const [currentColor, setCurrentColor] = useState(COLORS[0]);
-  const [tool, setTool] = useState<ToolType>('pen');
-  const [strokeWidth, setStrokeWidth] = useState(5);
-  const [users, setUsers] = useState<UserInfo[]>([]);
-  // 협업 기능
-  const [followingUserId, setFollowingUserId] = useState<string | null>(null);
-  const [, setUserViewports] = useState<Record<string, UserViewport>>({});
-  const [emojiReactions, setEmojiReactions] = useState<EmojiReaction[]>([]);
-  const [isEmojiMode, setIsEmojiMode] = useState(false);
-  const [selectedEmoji, setSelectedEmoji] = useState('👍');
-  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isViewOnly, setIsViewOnly] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [inputText, setInputText] = useState('');
-  const [textInput, setTextInput] = useState<TextInputState | null>(null);
-  const [isFilled, setIsFilled] = useState(false);
-  const [showGrid, setShowGrid] = useState(true);
-  const [isChatOpen, setIsChatOpen] = useState(true);
-  const [stageSize, setStageSize] = useState({ width: window.innerWidth, height: window.innerHeight });
-  const [cursors, setCursors] = useState<Record<string, CursorData>>({});
-  const [typingUsers, setTypingUsers] = useState<string[]>([]);
-  // 선택 및 우클릭 메뉴
+
+  // ── 캔버스 데이터 ──
+  const [elements, setElements] = useState<DrawElement[]>([]);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [boxSelectRect, setBoxSelectRect] = useState<Bounds | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  // 줌/패닝
-  const [stageScale, setStageScale] = useState(1);
-  const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
-  const [isSpaceHeld, setIsSpaceHeld] = useState(false);
-  // 스타일
-  const [currentDash, setCurrentDash] = useState<DashStyle>('solid');
-  const [currentOpacity, setCurrentOpacity] = useState(1.0);
-  const [stickyBg, setStickyBg] = useState('#fef08a');
-  // UI
-  const [isSnapEnabled, setIsSnapEnabled] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
-  const [isDragOver, setIsDragOver] = useState(false);
+  const [textInput, setTextInput] = useState<TextInputState | null>(null);
   const [, setImageLoadTick] = useState(0);
-  // 다크 모드
-  const [isDarkMode, setIsDarkMode] = useState(false);
-  // 최근 사용 색상
-  const [recentColors, setRecentColors] = useState<string[]>([]);
-  // 토스트 알림
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  // 펜 옵션
-  const [isSmoothing, setIsSmoothing] = useState(false);
-  const [isSmartShape, setIsSmartShape] = useState(false);
+
+  // ── 협업 상태 ──
+  const [users, setUsers] = useState<UserInfo[]>([]);
+  const [followingUserId, setFollowingUserId] = useState<string | null>(null);
+  const [, setUserViewports] = useState<Record<string, UserViewport>>({});
+  const [emojiReactions, setEmojiReactions] = useState<EmojiReaction[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputText, setInputText] = useState('');
+  const [cursors, setCursors] = useState<Record<string, CursorData>>({});
+  const [typingUsers, setTypingUsers] = useState<string[]>([]);
 
   // ── Refs ──
   const isDrawing = useRef(false);
@@ -110,10 +116,7 @@ export default function Board() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const lastCursorEmit = useRef(0);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isSmoothingRef = useRef(false);
-  const isSmartShapeRef = useRef(false);
   const isDraggingSelected = useRef(false);
   const dragStartPos = useRef<{ x: number; y: number } | null>(null);
   const dragOriginals = useRef<{ idx: number; el: DrawElement }[]>([]);
@@ -124,88 +127,18 @@ export default function Board() {
   const clipboard = useRef<DrawElement | null>(null);
   const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
   const elementsRef = useRef<DrawElement[]>([]);
-  const toolRef = useRef<ToolType>('pen');
-  
+  const selectedIndicesRef = useRef<Set<number>>(new Set());
+  const followingUserRef = useRef<string | null>(null);
+
   // ── 히스토리 훅 ──
   const { saveHistoryWith, handleUndo, handleRedo, historyRef, historyStepRef } = useHistory(
     setElements, setSelectedIndices, socket,
   );
-  
-  const selectedIndicesRef = useRef<Set<number>>(new Set());
-  const stagePosRef = useRef({ x: 0, y: 0 });
-  const stageScaleRef = useRef(1);
-  const showHelpRef = useRef(false);
-  const spaceHeldRef = useRef(false);
-  const isSnapEnabledRef = useRef(false);
-  const followingUserRef = useRef<string | null>(null);
-  const lastViewportEmit = useRef(0);
-
-  // ── 테마 ──
-  const theme = useMemo(() => ({
-    bg: isDarkMode ? '#111827' : '#f9fafb',
-    panel: isDarkMode ? '#1f2937' : 'white',
-    border: isDarkMode ? '#374151' : '#e5e7eb',
-    text: isDarkMode ? '#f3f4f6' : '#374151',
-    textMuted: isDarkMode ? '#9ca3af' : '#6b7280',
-    textSubtle: isDarkMode ? '#6b7280' : '#9ca3af',
-    shadow: isDarkMode ? '0 4px 6px rgba(0,0,0,0.5)' : '0 4px 6px rgba(0,0,0,0.1)',
-    gridColor: isDarkMode ? '#374151' : '#c8cdd6',
-    inputBg: isDarkMode ? '#374151' : 'white',
-    inputBorder: isDarkMode ? '#4b5563' : '#d1d5db',
-    chatBubbleSelf: '#3b82f6',
-    chatBubbleOther: isDarkMode ? '#374151' : '#f3f4f6',
-    chatTextOther: isDarkMode ? '#f3f4f6' : '#374151',
-  }), [isDarkMode]);
-
-  // ── 토스트 ──
-  const showToast = useCallback((message: string, type: Toast['type'] = 'info') => {
-    const id = generateId();
-    setToasts(prev => [...prev, { id, message, type }]);
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
-  }, []);
-
-  // ── 색상 선택 ──
-  const selectColor = (color: string) => {
-    setCurrentColor(color);
-    if (tool === 'eraser') setTool('pen');
-    setRecentColors(prev => {
-      const filtered = prev.filter(c => c !== color);
-      return [color, ...filtered].slice(0, 5);
-    });
-  };
 
   // Ref 동기화
   elementsRef.current = elements;
   selectedIndicesRef.current = selectedIndices;
-  stagePosRef.current = stagePos;
-  stageScaleRef.current = stageScale;
-  showHelpRef.current = showHelp;
-  spaceHeldRef.current = isSpaceHeld;
-  isSnapEnabledRef.current = isSnapEnabled;
   followingUserRef.current = followingUserId;
-  isSmoothingRef.current = isSmoothing;
-  isSmartShapeRef.current = isSmartShape;
-  toolRef.current = tool;
-
-  // ── 좌표 변환 ──
-  const getCanvasPos = useCallback((stage: Konva.Stage): { x: number; y: number } | null => {
-    const p = stage.getPointerPosition();
-    if (!p) return null;
-    return {
-      x: (p.x - stagePosRef.current.x) / stageScaleRef.current,
-      y: (p.y - stagePosRef.current.y) / stageScaleRef.current,
-    };
-  }, []);
-
-  const canvasToScreen = (cx: number, cy: number) => ({
-    x: cx * stageScale + stagePos.x,
-    y: cy * stageScale + stagePos.y,
-  });
-
-  const screenToCanvas = (sx: number, sy: number) => ({
-    x: (sx - stagePosRef.current.x) / stageScaleRef.current,
-    y: (sy - stagePosRef.current.y) / stageScaleRef.current,
-  });
 
   // ── 선택 관련 ──
   const deleteSelected = () => {
@@ -441,6 +374,7 @@ export default function Board() {
     setStagePos({ x: (w - cw * newScale) / 2 - minX * newScale, y: (h - ch * newScale) / 2 - minY * newScale });
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const snap = useCallback((v: number) => isSnapEnabledRef.current ? Math.round(v / 28) * 28 : v, []);
 
   // ── Effects ──
@@ -465,6 +399,7 @@ export default function Board() {
     const h = () => setStageSize({ width: window.innerWidth, height: window.innerHeight });
     window.addEventListener('resize', h);
     return () => window.removeEventListener('resize', h);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -473,6 +408,7 @@ export default function Board() {
     if (now - lastViewportEmit.current < 80) return;
     lastViewportEmit.current = now;
     socket.emit('viewport_update', { scale: stageScale, x: stagePos.x, y: stagePos.y });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stageScale, stagePos, isJoined]);
 
   useEffect(() => {
@@ -524,6 +460,7 @@ export default function Board() {
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useKeyboardShortcuts({
@@ -565,6 +502,7 @@ export default function Board() {
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isJoined]);
 
   // ── 핸들러 ──
@@ -590,6 +528,13 @@ export default function Board() {
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     setInputText('');
   };
+
+  const handleChatInputChange = useCallback((value: string) => {
+    setInputText(value);
+    socket.emit('typing', nickname);
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    typingTimerRef.current = setTimeout(() => socket.emit('stop_typing', nickname), 1500);
+  }, [nickname]);
 
   const handleClearAll = useCallback(() => {
     setElements([]); setSelectedIndices(new Set());
@@ -779,7 +724,7 @@ export default function Board() {
       socket.emit('update_element', last); 
       return upd;
     });
-  }, [getCanvasPos, snap]);
+  }, [getCanvasPos, snap, lastCursorEmit, setStagePos, toolRef]);
 
   const handleMouseUp = useCallback(() => {
     if (isPanning.current) { isPanning.current = false; panStart.current = null; return; }
@@ -843,7 +788,7 @@ export default function Board() {
       saveHistoryWith(latest);
       return latest;
     });
-  }, [saveHistoryWith, showToast]);
+  }, [saveHistoryWith, showToast, toolRef, isSmartShapeRef, isSmoothingRef]);
 
   const handleDblClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (tool !== 'select') return;
@@ -929,68 +874,11 @@ export default function Board() {
 
   const textAreaScreen = textInput ? canvasToScreen(textInput.x, textInput.y) : null;
 
-  const toolBtn = (active: boolean): React.CSSProperties => ({
-    background: 'none', border: 'none', cursor: 'pointer',
-    color: active ? '#3b82f6' : theme.textSubtle, display: 'flex', alignItems: 'center', padding: '2px',
-  });
   const iconBtn: React.CSSProperties = { background: 'none', border: 'none', cursor: 'pointer', color: theme.textMuted, display: 'flex', alignItems: 'center', padding: '2px' };
   const layerBtn = (disabled = false): React.CSSProperties => ({
     background: 'none', border: 'none', cursor: disabled ? 'default' : 'pointer',
     color: disabled ? theme.border : theme.textMuted, display: 'flex', alignItems: 'center', padding: '4px', borderRadius: '4px',
   });
-  const dashBtn = (active: boolean): React.CSSProperties => ({
-    padding: '3px 8px', border: active ? '2px solid #3b82f6' : `1px solid ${theme.border}`,
-    borderRadius: '4px', cursor: 'pointer', background: active ? '#eff6ff' : 'none',
-    color: active ? '#3b82f6' : theme.textMuted, fontSize: '13px', fontWeight: 'bold', lineHeight: 1,
-  });
-
-  // ── 미니맵 (Minimap) 계산 로직 ──
-  const minimapData = useMemo(() => {
-    const mapWidth = 200, mapHeight = 150;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    elements.forEach(el => {
-      const b = getElementBounds(el);
-      if (b) {
-        minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
-        maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
-      }
-    });
-    if (minX === Infinity) { minX = 0; minY = 0; maxX = window.innerWidth; maxY = window.innerHeight; }
-    const mapPad = 500;
-    minX -= mapPad; minY -= mapPad; maxX += mapPad; maxY += mapPad;
-    const contentW = maxX - minX, contentH = maxY - minY;
-    const mapScale = Math.min(mapWidth / contentW, mapHeight / contentH);
-    const mapOffsetX = (mapWidth - contentW * mapScale) / 2;
-    const mapOffsetY = (mapHeight - contentH * mapScale) / 2;
-    const dots = elements.map((el, i) => {
-      const b = getElementBounds(el);
-      if (!b) return null;
-      return <rect key={i} x={mapOffsetX + (b.x - minX) * mapScale} y={mapOffsetY + (b.y - minY) * mapScale} width={b.width * mapScale} height={b.height * mapScale} fill={el.color === 'transparent' ? '#ccc' : el.color} opacity={0.6} rx={2} />;
-    });
-    return { mapWidth, mapHeight, minX, minY, mapScale, mapOffsetX, mapOffsetY, dots };
-  }, [elements]);
-
-  const { mapWidth, mapHeight, minX, minY, mapScale, mapOffsetX, mapOffsetY, dots: minimapDots } = minimapData;
-
-  const viewRectX = mapOffsetX + (-stagePos.x / stageScale - minX) * mapScale;
-  const viewRectY = mapOffsetY + (-stagePos.y / stageScale - minY) * mapScale;
-  const viewRectW = (window.innerWidth / stageScale) * mapScale;
-  const viewRectH = (window.innerHeight / stageScale) * mapScale;
-
-  const handleMinimapInteraction = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.buttons !== 1) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const clickY = e.clientY - rect.top;
-
-    const canvasX = (clickX - mapOffsetX) / mapScale + minX;
-    const canvasY = (clickY - mapOffsetY) / mapScale + minY;
-
-    setStagePos({
-      x: -(canvasX * stageScale) + window.innerWidth / 2,
-      y: -(canvasY * stageScale) + window.innerHeight / 2
-    });
-  };
 
   // ── 렌더링 ──
   if (!isJoined) {
@@ -1028,165 +916,28 @@ export default function Board() {
       )}
 
       {/* ── 상단 도구 모음 ── */}
-      <div style={{ position:'absolute', top:'16px', left:'50%', transform:'translateX(-50%)', zIndex:10, display:'flex', flexDirection:'column', gap:'6px', alignItems:'center' }}>
-        {tool === 'pen' && !isViewOnly && (
-          <div style={{ display:'flex', gap:'8px', padding:'5px 14px', backgroundColor: theme.panel, borderRadius:'10px', boxShadow: theme.shadow, alignItems:'center' }}>
-            <span style={{ fontSize:'11px', color: theme.textMuted }}>펜 옵션</span>
-            <button
-              onClick={() => setIsSmoothing(v => !v)}
-              title="선 매끄럽게 처리 (Smoothing) — 그린 후 자동 보정"
-              style={{ display:'flex', alignItems:'center', gap:'4px', padding:'3px 8px', borderRadius:'6px', cursor:'pointer', border: isSmoothing ? '2px solid #3b82f6' : `1px solid ${theme.border}`, background: isSmoothing ? '#eff6ff' : 'none', color: isSmoothing ? '#3b82f6' : theme.textMuted, fontSize:'12px' }}
-            >
-              <Spline size={15}/> 스무딩
-            </button>
-            <button
-              onClick={() => setIsSmartShape(v => !v)}
-              title="도형 자동 인식 (Smart Shape) — 원/삼각형 자동 변환"
-              style={{ display:'flex', alignItems:'center', gap:'4px', padding:'3px 8px', borderRadius:'6px', cursor:'pointer', border: isSmartShape ? '2px solid #8b5cf6' : `1px solid ${theme.border}`, background: isSmartShape ? '#f5f3ff' : 'none', color: isSmartShape ? '#8b5cf6' : theme.textMuted, fontSize:'12px' }}
-            >
-              <Wand2 size={15}/> 스마트 도형
-            </button>
-          </div>
-        )}
-
-        <div style={{ display:'flex', gap:'12px', padding:'8px 16px', backgroundColor: theme.panel, borderRadius:'12px', boxShadow: theme.shadow, alignItems:'center' }}>
-          {!isViewOnly && (
-          <div style={{ display:'flex', gap:'6px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
-            <button onClick={() => { setTool('select'); setSelectedIndices(new Set()); }} title="선택 (S)" style={toolBtn(tool==='select')}><MousePointer size={22}/></button>
-            <button onClick={() => setTool('pen')} title="펜 (P)" style={toolBtn(tool==='pen')}><Pen size={22}/></button>
-            <button onClick={() => setTool('eraser')} title="지우개 (E)" style={toolBtn(tool==='eraser')}><Eraser size={22}/></button>
-            <button onClick={() => setTool('rect')} title="사각형 (R)" style={toolBtn(tool==='rect')}><Square size={22}/></button>
-            <button onClick={() => setTool('circle')} title="원 (C)" style={toolBtn(tool==='circle')}><Circle size={22}/></button>
-            <button onClick={() => setTool('text')} title="텍스트 (T)" style={toolBtn(tool==='text')}><Type size={22}/></button>
-            <button onClick={() => setTool('straight')} title="직선 (L)" style={toolBtn(tool==='straight')}><Minus size={22}/></button>
-            <button onClick={() => setTool('arrow')} title="화살표 (A)" style={toolBtn(tool==='arrow')}><ArrowRight size={22}/></button>
-            <button onClick={() => setTool('sticky')} title="스티커 메모 (N)" style={toolBtn(tool==='sticky')}><StickyNote size={22}/></button>
-            <button onClick={() => setTool('triangle')} title="삼각형 (V)" style={toolBtn(tool==='triangle')}><Triangle size={22}/></button>
-          </div>
-          )}
-
-          {!isViewOnly && (
-            <div style={{ position:'relative', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
-              <button
-                onClick={() => setShowEmojiPicker(v => !v)}
-                title="이모지 반응"
-                style={{ ...toolBtn(isEmojiMode), fontSize:'20px', minWidth:'28px', border: isEmojiMode ? '2px solid #3b82f6' : '2px solid transparent', borderRadius:'6px', padding:'2px 4px' }}
-              >
-                {selectedEmoji}
-              </button>
-              {showEmojiPicker && (
-                <div style={{ position:'absolute', top:'38px', left:0, zIndex:100, backgroundColor: theme.panel, borderRadius:'10px', padding:'8px 10px', display:'flex', gap:'4px', boxShadow: theme.shadow, border:`1px solid ${theme.border}` }}>
-                  {REACTION_EMOJIS.map(emoji => (
-                    <button key={emoji} onClick={() => { setSelectedEmoji(emoji); setIsEmojiMode(true); setShowEmojiPicker(false); }}
-                      style={{ fontSize:'22px', background: selectedEmoji === emoji && isEmojiMode ? '#eff6ff' : 'none', border: selectedEmoji === emoji && isEmojiMode ? '2px solid #3b82f6' : '2px solid transparent', borderRadius:'6px', cursor:'pointer', padding:'4px', lineHeight:1 }}>
-                      {emoji}
-                    </button>
-                  ))}
-                  {isEmojiMode && (
-                    <button onClick={() => { setIsEmojiMode(false); setShowEmojiPicker(false); }}
-                      style={{ fontSize:'12px', background:'#fee2e2', border:'none', borderRadius:'6px', cursor:'pointer', padding:'4px 6px', color:'#ef4444', fontWeight:'bold', alignSelf:'center' }}>
-                      OFF
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {!isViewOnly && (
-          <div style={{ borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
-            <button onClick={() => setIsFilled(v => !v)} title={isFilled ? '채우기 ON' : '채우기 OFF'}
-              style={{ background:isFilled?'#3b82f6':'none', border:isFilled?'none':`1px solid ${theme.border}`, borderRadius:'6px', cursor:'pointer', color:isFilled?'white': theme.textSubtle, padding:'2px 6px', display:'flex', alignItems:'center' }}>
-              <PaintBucket size={22}/>
-            </button>
-          </div>
-          )}
-
-          {!isViewOnly && (
-          <div style={{ display:'flex', gap:'8px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px', alignItems:'center', flexWrap:'wrap', maxWidth:'260px' }}>
-            <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
-              {COLORS.map(c => (
-                <button key={c} onClick={() => selectColor(c)}
-                  style={{ width:'22px', height:'22px', borderRadius:'50%', backgroundColor:c, border: currentColor===c && tool!=='eraser' ? '3px solid #3b82f6' : `1px solid ${theme.border}`, cursor:'pointer' }} />
-              ))}
-              <label title="커스텀 색상" style={{ position:'relative', width:'22px', height:'22px', cursor:'pointer' }}>
-                <input type="color" value={currentColor} onChange={(e) => selectColor(e.target.value)}
-                  style={{ position:'absolute', opacity:0, width:'100%', height:'100%', cursor:'pointer', top:0, left:0 }} />
-                <div style={{ width:'22px', height:'22px', borderRadius:'50%', background:'conic-gradient(red,yellow,lime,cyan,blue,magenta,red)', border: !COLORS.includes(currentColor)&&tool!=='eraser' ? '3px solid #3b82f6' : `1px solid ${theme.border}` }} />
-              </label>
-            </div>
-            {recentColors.length > 0 && (
-              <div style={{ display:'flex', gap:'4px', alignItems:'center', borderLeft:`1px solid ${theme.border}`, paddingLeft:'6px' }}>
-                <span style={{ fontSize:'10px', color:theme.textSubtle, whiteSpace:'nowrap' }}>최근</span>
-                {recentColors.map((c, i) => (
-                  <button key={i} onClick={() => selectColor(c)} title={c}
-                    style={{ width:'18px', height:'18px', borderRadius:'50%', backgroundColor:c, border: currentColor===c ? '2px solid #3b82f6' : `1px solid ${theme.border}`, cursor:'pointer' }} />
-                ))}
-              </div>
-            )}
-            {tool === 'sticky' && (
-              <div style={{ display:'flex', gap:'4px', alignItems:'center', borderLeft:`1px solid ${theme.border}`, paddingLeft:'8px' }}>
-                {STICKY_COLORS.map(c => (
-                  <button key={c} onClick={() => setStickyBg(c)}
-                    style={{ width:'20px', height:'20px', borderRadius:'4px', backgroundColor:c, border: stickyBg===c ? '2px solid #3b82f6' : '1px solid #d1d5db', cursor:'pointer' }} />
-                ))}
-              </div>
-            )}
-          </div>
-          )}
-
-          {!isViewOnly && (
-          <div style={{ display:'flex', alignItems:'center', gap:'8px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
-            <span style={{ fontSize:'11px', color:theme.textMuted, whiteSpace:'nowrap' }}>{tool==='text' ? '크기' : '굵기'}</span>
-            <input type="range" min="1" max="50" value={strokeWidth} onChange={(e) => setStrokeWidth(Number(e.target.value))} style={{ width:'70px' }} />
-            <span style={{ fontSize:'11px', color:theme.textSubtle, minWidth:'20px' }}>{tool==='text' ? Math.max(12,strokeWidth*3) : strokeWidth}</span>
-          </div>
-          )}
-
-          {!isViewOnly && (
-          <div style={{ display:'flex', gap:'4px', alignItems:'center', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
-            <button style={dashBtn(currentDash==='solid')} onClick={() => setCurrentDash('solid')} title="실선">—</button>
-            <button style={dashBtn(currentDash==='dashed')} onClick={() => setCurrentDash('dashed')} title="파선">- -</button>
-            <button style={dashBtn(currentDash==='dotted')} onClick={() => setCurrentDash('dotted')} title="점선">···</button>
-          </div>
-          )}
-
-          {!isViewOnly && (
-          <div style={{ display:'flex', alignItems:'center', gap:'6px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
-            <span style={{ fontSize:'11px', color:theme.textMuted }}>투명도</span>
-            <input type="range" min="10" max="100" value={Math.round(currentOpacity*100)} onChange={(e) => setCurrentOpacity(Number(e.target.value)/100)} style={{ width:'60px' }} />
-            <span style={{ fontSize:'11px', color:theme.textSubtle, minWidth:'28px' }}>{Math.round(currentOpacity*100)}%</span>
-          </div>
-          )}
-
-          <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
-            {isViewOnly ? (
-              <div style={{ display:'flex', alignItems:'center', gap:'6px', padding:'4px 10px', backgroundColor:'#fef3c7', border:'1px solid #f59e0b', borderRadius:'8px', color:'#92400e', fontSize:'12px', fontWeight:'bold' }}>
-                👁️ 읽기 전용
-              </div>
-            ) : (
-              <>
-                <button onClick={handleUndo} title="실행 취소 (Ctrl+Z)" style={iconBtn}><Undo2 size={22}/></button>
-                <button onClick={handleRedo} title="다시 실행 (Ctrl+Y)" style={iconBtn}><Redo2 size={22}/></button>
-                <button onClick={() => setShowGrid(v => !v)} title="그리드 토글" style={{ ...iconBtn, color: showGrid?'#3b82f6':'#9ca3af' }}><Grid2X2 size={22}/></button>
-                <button onClick={() => setIsSnapEnabled(v => !v)} title="그리드 스냅 ON/OFF" style={{ ...iconBtn, color: isSnapEnabled?'#3b82f6':'#9ca3af' }}><Magnet size={22}/></button>
-                <button onClick={handleDownloadPNG} title="PNG 저장" style={iconBtn}><Download size={22}/></button>
-                <button onClick={handleExportJSON} title="JSON 내보내기" style={iconBtn}><FileJson size={22}/></button>
-                <button onClick={() => importInputRef.current?.click()} title="JSON 가져오기" style={iconBtn}><Upload size={22}/></button>
-                <button onClick={() => imageInputRef.current?.click()} title="이미지 삽입" style={iconBtn}><ImageIcon size={22}/></button>
-                <button onClick={handleClearAll} title="전체 지우기" style={{ ...iconBtn, color:'#ef4444' }}><Trash2 size={22}/></button>
-              </>
-            )}
-            <button onClick={() => setShowHelp(v => !v)} title="단축키 도움말 (?)" style={iconBtn}><HelpCircle size={22}/></button>
-            <button onClick={() => setIsDarkMode(v => !v)} title={isDarkMode ? '라이트 모드' : '다크 모드'} style={{ ...iconBtn, color: isDarkMode ? '#f59e0b' : '#6b7280' }}>
-              {isDarkMode ? <Sun size={22}/> : <Moon size={22}/>}
-            </button>
-          </div>
-
-          <input ref={importInputRef} type="file" accept=".json" onChange={handleImportJSON} style={{ display:'none' }} />
-          <input ref={imageInputRef} type="file" accept="image/*" onChange={(e) => { if (e.target.files?.[0]) handleImageFile(e.target.files[0]); e.target.value=''; }} style={{ display:'none' }} />
-        </div>
-      </div>
+      <Toolbar
+        tool={tool} setTool={setTool} setSelectedIndices={setSelectedIndices}
+        isViewOnly={isViewOnly} theme={theme} isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode}
+        currentColor={currentColor} selectColor={selectColor} recentColors={recentColors}
+        strokeWidth={strokeWidth} setStrokeWidth={setStrokeWidth}
+        isFilled={isFilled} setIsFilled={setIsFilled}
+        showGrid={showGrid} setShowGrid={setShowGrid}
+        isSnapEnabled={isSnapEnabled} setIsSnapEnabled={setIsSnapEnabled}
+        currentDash={currentDash} setCurrentDash={setCurrentDash}
+        currentOpacity={currentOpacity} setCurrentOpacity={setCurrentOpacity}
+        stickyBg={stickyBg} setStickyBg={setStickyBg}
+        isSmoothing={isSmoothing} setIsSmoothing={setIsSmoothing}
+        isSmartShape={isSmartShape} setIsSmartShape={setIsSmartShape}
+        isEmojiMode={isEmojiMode} setIsEmojiMode={setIsEmojiMode}
+        selectedEmoji={selectedEmoji} setSelectedEmoji={setSelectedEmoji}
+        showEmojiPicker={showEmojiPicker} setShowEmojiPicker={setShowEmojiPicker}
+        handleUndo={handleUndo} handleRedo={handleRedo}
+        handleDownloadPNG={handleDownloadPNG} handleExportJSON={handleExportJSON} handleClearAll={handleClearAll}
+        handleImportJSON={handleImportJSON} handleImageFile={handleImageFile}
+        setShowHelp={setShowHelp}
+        importInputRef={importInputRef} imageInputRef={imageInputRef}
+      />
 
       {/* 줌 인디케이터 */}
       <div style={{ position:'absolute', bottom:'20px', left:'50%', transform:'translateX(-50%)', zIndex:10, display:'flex', alignItems:'center', gap:'8px', padding:'6px 14px', backgroundColor: theme.panel, borderRadius:'20px', boxShadow: theme.shadow, fontSize:'13px', color: theme.textMuted }}>
@@ -1275,60 +1026,25 @@ export default function Board() {
       </div>
 
       {/* 채팅창 */}
-      <div style={{ position:'absolute', bottom:'20px', right:'20px', zIndex:10, width:'280px', backgroundColor: theme.panel, borderRadius:'12px', boxShadow: theme.shadow, display:'flex', flexDirection:'column' }}>
-        <div style={{ padding:'12px', borderBottom:isChatOpen?`1px solid ${theme.border}`:'none', fontWeight:'bold', display:'flex', alignItems:'center', gap:'8px', cursor:'pointer', color: theme.text }} onClick={() => setIsChatOpen(v => !v)}>
-          <MessageSquare size={18}/>
-          <span style={{ flex:1 }}>채팅 {messages.length>0 && !isChatOpen && <span style={{ fontSize:'11px', backgroundColor:'#3b82f6', color:'white', borderRadius:'10px', padding:'1px 6px' }}>{messages.length}</span>}</span>
-          <ChevronDown size={16} style={{ color: theme.textSubtle, transform:isChatOpen?'rotate(0deg)':'rotate(-90deg)', transition:'transform 0.2s' }}/>
-        </div>
-        {isChatOpen && (
-          <>
-            <div style={{ height:'240px', padding:'10px', overflowY:'auto', display:'flex', flexDirection:'column', gap:'8px' }}>
-              {messages.map((msg, i) => (
-                <div key={i} style={{ alignSelf:msg.sender===nickname?'flex-end':'flex-start', maxWidth:'85%' }}>
-                  <div style={{ fontSize:'10px', color: theme.textSubtle, textAlign:msg.sender===nickname?'right':'left' }}>{msg.sender}</div>
-                  <div style={{ padding:'6px 10px', borderRadius:'10px', fontSize:'13px', backgroundColor:msg.sender===nickname ? theme.chatBubbleSelf : theme.chatBubbleOther, color:msg.sender===nickname?'white': theme.chatTextOther }}>{msg.text}</div>
-                </div>
-              ))}
-              <div ref={chatEndRef}/>
-            </div>
-            {typingUsers.length > 0 && (
-              <div style={{ padding:'4px 12px', fontSize:'11px', color: theme.textSubtle, fontStyle:'italic' }}>
-                {typingUsers.join(', ')}이(가) 입력 중...
-              </div>
-            )}
-            <div style={{ padding:'10px', borderTop:`1px solid ${theme.border}`, display:'flex', gap:'5px' }}>
-              <input type="text" value={inputText} onChange={(e) => {
-                setInputText(e.target.value);
-                socket.emit('typing', nickname);
-                if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
-                typingTimerRef.current = setTimeout(() => socket.emit('stop_typing', nickname), 1500);
-              }} onKeyDown={(e) => e.key==='Enter' && handleSendMessage()} placeholder="메시지..."
-                style={{ flex:1, padding:'6px', borderRadius:'4px', border:`1px solid ${theme.inputBorder}`, fontSize:'13px', backgroundColor: theme.inputBg, color: theme.text }} />
-              <button onClick={handleSendMessage} style={{ padding:'6px', backgroundColor:'#3b82f6', color:'white', border:'none', borderRadius:'4px', cursor:'pointer' }}><Send size={16}/></button>
-            </div>
-          </>
-        )}
-      </div>
+      <ChatPanel
+        theme={theme}
+        isChatOpen={isChatOpen} setIsChatOpen={setIsChatOpen}
+        messages={messages} nickname={nickname}
+        typingUsers={typingUsers}
+        inputText={inputText}
+        handleSendMessage={handleSendMessage}
+        handleInputChange={handleChatInputChange}
+        chatEndRef={chatEndRef}
+      />
 
       {/* 🗺️ 미니맵 (좌측 하단) */}
-      <div 
-        style={{ 
-          position: 'absolute', bottom: '20px', left: '20px', zIndex: 10, 
-          width: `${mapWidth}px`, height: `${mapHeight}px`, 
-          backgroundColor: theme.panel, borderRadius: '8px', 
-          boxShadow: theme.shadow, overflow: 'hidden', 
-          border: `1px solid ${theme.border}`, cursor: 'crosshair'
-        }}
-        onMouseDown={handleMinimapInteraction}
-        onMouseMove={handleMinimapInteraction}
-        title="드래그하여 이동"
-      >
-        <svg width="100%" height="100%">
-          {minimapDots}
-          <rect x={viewRectX} y={viewRectY} width={viewRectW} height={viewRectH} stroke="#ef4444" strokeWidth="2" fill="rgba(239, 68, 68, 0.15)" />
-        </svg>
-      </div>
+      <Minimap
+        elements={elements}
+        stagePos={stagePos}
+        stageScale={stageScale}
+        theme={theme}
+        onNavigate={(pos) => setStagePos(pos)}
+      />
 
       {/* 다른 사용자 커서 */}
       {Object.entries(cursors).map(([id, cur]) => {
