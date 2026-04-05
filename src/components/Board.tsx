@@ -23,11 +23,15 @@ interface CursorData { x: number; y: number; nickname: string; }
 interface TextInputState { x: number; y: number; value: string; targetIdx?: number; }
 interface ChatMessage { text: string; sender: string; time: string; }
 interface Toast { id: string; message: string; type: 'join' | 'leave' | 'info'; }
+interface UserInfo { id: string; nickname: string; }
+interface EmojiReaction { id: string; x: number; y: number; emoji: string; nickname: string; }
+interface UserViewport { scale: number; x: number; y: number; nickname: string; }
 
 // ── 상수 ──────────────────────────────────────────────────────────────────
 
 const COLORS = ['#000000', '#ef4444', '#3b82f6', '#22c55e', '#f59e0b'];
 const CURSOR_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6'];
+const REACTION_EMOJIS = ['👍', '❤️', '😂', '🎉', '🔥', '😮', '👏', '✨'];
 const STICKY_COLORS = ['#fef08a', '#bbf7d0', '#bfdbfe', '#fecaca', '#e9d5ff', '#fed7aa'];
 
 const getCursorColor = (id: string) => {
@@ -74,7 +78,15 @@ export default function Board() {
   const [currentColor, setCurrentColor] = useState(COLORS[0]);
   const [tool, setTool] = useState<ToolType>('pen');
   const [strokeWidth, setStrokeWidth] = useState(5);
-  const [users, setUsers] = useState<string[]>([]);
+  const [users, setUsers] = useState<UserInfo[]>([]);
+  // 협업 기능
+  const [followingUserId, setFollowingUserId] = useState<string | null>(null);
+  const [userViewports, setUserViewports] = useState<Record<string, UserViewport>>({});
+  const [emojiReactions, setEmojiReactions] = useState<EmojiReaction[]>([]);
+  const [isEmojiMode, setIsEmojiMode] = useState(false);
+  const [selectedEmoji, setSelectedEmoji] = useState('👍');
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [isViewOnly, setIsViewOnly] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [textInput, setTextInput] = useState<TextInputState | null>(null);
@@ -135,6 +147,8 @@ export default function Board() {
   const showHelpRef = useRef(false);
   const spaceHeldRef = useRef(false);
   const isSnapEnabledRef = useRef(false);
+  const followingUserRef = useRef<string | null>(null);
+  const lastViewportEmit = useRef(0);
 
   // ── 테마 ──
   const theme = {
@@ -178,6 +192,7 @@ export default function Board() {
   showHelpRef.current = showHelp;
   spaceHeldRef.current = isSpaceHeld;
   isSnapEnabledRef.current = isSnapEnabled;
+  followingUserRef.current = followingUserId;
 
   // ── 좌표 변환 ──
 
@@ -452,6 +467,15 @@ export default function Board() {
     return () => window.removeEventListener('resize', h);
   }, []);
 
+  // 뷰포트 변경 시 브로드캐스트 (Follow Me)
+  useEffect(() => {
+    if (!isJoined) return;
+    const now = Date.now();
+    if (now - lastViewportEmit.current < 80) return;
+    lastViewportEmit.current = now;
+    socket.emit('viewport_update', { scale: stageScale, x: stagePos.x, y: stagePos.y });
+  }, [stageScale, stagePos, isJoined]);
+
   // 마우스 업 (캔버스 밖)
   useEffect(() => {
     const up = () => {
@@ -602,20 +626,36 @@ export default function Board() {
       setElements([]); setSelectedIndices(new Set());
       historyRef.current = [[]]; historyStepRef.current = 0;
     });
-    socket.on('user_list', (list: string[]) => setUsers(list));
+    socket.on('user_list', (list: UserInfo[]) => setUsers(list));
     socket.on('receive_message', (msg: ChatMessage) => setMessages((p) => [...p, msg]));
     socket.on('cursor_move', (data: CursorData & { id: string }) => {
       setCursors((p) => ({ ...p, [data.id]: { x: data.x, y: data.y, nickname: data.nickname } }));
     });
     socket.on('cursor_leave', (id: string) => {
       setCursors((p) => { const n = { ...p }; delete n[id]; return n; });
+      setUserViewports((p) => { const n = { ...p }; delete n[id]; return n; });
+      setFollowingUserId((prev) => prev === id ? null : prev);
     });
     socket.on('typing', (name: string) => setTypingUsers((p) => p.includes(name) ? p : [...p, name]));
     socket.on('stop_typing', (name: string) => setTypingUsers((p) => p.filter((n) => n !== name)));
     socket.on('user_joined', (name: string) => showToast(`${name}님이 입장했습니다`, 'join'));
     socket.on('user_left', (name: string) => showToast(`${name}님이 퇴장했습니다`, 'leave'));
+    // Follow Me: 다른 유저의 뷰포트 수신
+    socket.on('viewport_update', (data: UserViewport & { id: string }) => {
+      setUserViewports((p) => ({ ...p, [data.id]: { scale: data.scale, x: data.x, y: data.y, nickname: data.nickname } }));
+      if (followingUserRef.current === data.id) {
+        setStageScale(data.scale);
+        setStagePos({ x: data.x, y: data.y });
+      }
+    });
+    // 이모지 반응 수신
+    socket.on('emoji_reaction', (data: EmojiReaction) => {
+      setEmojiReactions((p) => [...p, data]);
+      setTimeout(() => setEmojiReactions((p) => p.filter((r) => r.id !== data.id)), 1800);
+    });
     return () => {
-      ['draw_line','clear_all','user_list','receive_message','cursor_move','cursor_leave','typing','stop_typing','user_joined','user_left']
+      ['draw_line','clear_all','user_list','receive_message','cursor_move','cursor_leave',
+       'typing','stop_typing','user_joined','user_left','viewport_update','emoji_reaction']
         .forEach((ev) => socket.off(ev));
     };
   }, []);
@@ -653,9 +693,14 @@ export default function Board() {
 
   // ── 핸들러 ──
 
-  const handleJoin = () => {
-    if (!nickname.trim()) return;
-    socket.emit('set_nickname', nickname);
+  const handleJoin = (viewOnly = false) => {
+    const name = viewOnly ? '관람자' : nickname.trim();
+    if (!name) return;
+    if (viewOnly) {
+      setNickname('관람자');
+      setIsViewOnly(true);
+    }
+    socket.emit('set_nickname', name);
     setIsJoined(true);
   };
 
@@ -718,6 +763,19 @@ export default function Board() {
 
     const pos = getCanvasPos(stage);
     if (!pos) return;
+
+    // 이모지 반응 모드
+    if (isEmojiMode) {
+      const reactionId = generateId();
+      const reaction: EmojiReaction = { id: reactionId, x: pos.x, y: pos.y, emoji: selectedEmoji, nickname };
+      setEmojiReactions((p) => [...p, reaction]);
+      setTimeout(() => setEmojiReactions((p) => p.filter((r) => r.id !== reactionId)), 1800);
+      socket.emit('emoji_reaction', reaction);
+      return;
+    }
+
+    // 읽기 전용: 그리기 불가
+    if (isViewOnly) return;
 
     // 텍스트 도구
     if (tool === 'text') {
@@ -1046,8 +1104,11 @@ export default function Board() {
           <input type="text" value={nickname} onChange={(e) => setNickname(e.target.value)}
             onKeyDown={(e) => e.key==='Enter' && handleJoin()} placeholder="닉네임을 입력하세요"
             style={{ padding:'10px', borderRadius:'6px', border:`1px solid ${isDarkMode ? '#374151' : '#d1d5db'}`, backgroundColor: isDarkMode ? '#374151' : 'white', color: isDarkMode ? '#f3f4f6' : '#374151' }} />
-          <button onClick={handleJoin} style={{ padding:'10px', backgroundColor:'#3b82f6', color:'white', border:'none', borderRadius:'6px', cursor:'pointer', fontWeight:'bold' }}>
+          <button onClick={() => handleJoin()} style={{ padding:'10px', backgroundColor:'#3b82f6', color:'white', border:'none', borderRadius:'6px', cursor:'pointer', fontWeight:'bold' }}>
             입장하기
+          </button>
+          <button onClick={() => handleJoin(true)} style={{ padding:'8px', backgroundColor:'none', background:'none', border:`1px solid ${isDarkMode ? '#374151' : '#d1d5db'}`, borderRadius:'6px', cursor:'pointer', color: isDarkMode ? '#9ca3af' : '#6b7280', fontSize:'13px' }}>
+            👁️ 보기만 하기 (읽기 전용)
           </button>
           <button onClick={() => setIsDarkMode(v => !v)} style={{ padding:'6px', background:'none', border:`1px solid ${isDarkMode ? '#374151' : '#d1d5db'}`, borderRadius:'6px', cursor:'pointer', color: isDarkMode ? '#f3f4f6' : '#374151', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', fontSize:'13px' }}>
             {isDarkMode ? <Sun size={14}/> : <Moon size={14}/>} {isDarkMode ? '라이트 모드' : '다크 모드'}
@@ -1086,6 +1147,7 @@ export default function Board() {
         <div style={{ display:'flex', gap:'12px', padding:'8px 16px', backgroundColor: theme.panel, borderRadius:'12px', boxShadow: theme.shadow, alignItems:'center' }}>
 
           {/* 도구 선택 */}
+          {!isViewOnly && (
           <div style={{ display:'flex', gap:'6px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
             <button onClick={() => { setTool('select'); setSelectedIndices(new Set()); }} title="선택 (S)" style={toolBtn(tool==='select')}><MousePointer size={22}/></button>
             <button onClick={() => setTool('pen')} title="펜 (P)" style={toolBtn(tool==='pen')}><Pen size={22}/></button>
@@ -1098,16 +1160,49 @@ export default function Board() {
             <button onClick={() => setTool('sticky')} title="스티커 메모 (N)" style={toolBtn(tool==='sticky')}><StickyNote size={22}/></button>
             <button onClick={() => setTool('triangle')} title="삼각형 (V)" style={toolBtn(tool==='triangle')}><Triangle size={22}/></button>
           </div>
+          )}
+
+          {/* 이모지 반응 */}
+          {!isViewOnly && (
+            <div style={{ position:'relative', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
+              <button
+                onClick={() => setShowEmojiPicker(v => !v)}
+                title="이모지 반응"
+                style={{ ...toolBtn(isEmojiMode), fontSize:'20px', minWidth:'28px', border: isEmojiMode ? '2px solid #3b82f6' : '2px solid transparent', borderRadius:'6px', padding:'2px 4px' }}
+              >
+                {selectedEmoji}
+              </button>
+              {showEmojiPicker && (
+                <div style={{ position:'absolute', top:'38px', left:0, zIndex:100, backgroundColor: theme.panel, borderRadius:'10px', padding:'8px 10px', display:'flex', gap:'4px', boxShadow: theme.shadow, border:`1px solid ${theme.border}` }}>
+                  {REACTION_EMOJIS.map(emoji => (
+                    <button key={emoji} onClick={() => { setSelectedEmoji(emoji); setIsEmojiMode(true); setShowEmojiPicker(false); }}
+                      style={{ fontSize:'22px', background: selectedEmoji === emoji && isEmojiMode ? '#eff6ff' : 'none', border: selectedEmoji === emoji && isEmojiMode ? '2px solid #3b82f6' : '2px solid transparent', borderRadius:'6px', cursor:'pointer', padding:'4px', lineHeight:1 }}>
+                      {emoji}
+                    </button>
+                  ))}
+                  {isEmojiMode && (
+                    <button onClick={() => { setIsEmojiMode(false); setShowEmojiPicker(false); }}
+                      style={{ fontSize:'12px', background:'#fee2e2', border:'none', borderRadius:'6px', cursor:'pointer', padding:'4px 6px', color:'#ef4444', fontWeight:'bold', alignSelf:'center' }}>
+                      OFF
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* 채우기 */}
+          {!isViewOnly && (
           <div style={{ borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
             <button onClick={() => setIsFilled(v => !v)} title={isFilled ? '채우기 ON' : '채우기 OFF'}
               style={{ background:isFilled?'#3b82f6':'none', border:isFilled?'none':`1px solid ${theme.border}`, borderRadius:'6px', cursor:'pointer', color:isFilled?'white': theme.textSubtle, padding:'2px 6px', display:'flex', alignItems:'center' }}>
               <PaintBucket size={22}/>
             </button>
           </div>
+          )}
 
           {/* 색상 */}
+          {!isViewOnly && (
           <div style={{ display:'flex', gap:'8px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px', alignItems:'center', flexWrap:'wrap', maxWidth:'260px' }}>
             <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
               {COLORS.map(c => (
@@ -1140,39 +1235,54 @@ export default function Board() {
               </div>
             )}
           </div>
+          )}
 
           {/* 굵기 */}
+          {!isViewOnly && (
           <div style={{ display:'flex', alignItems:'center', gap:'8px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
             <span style={{ fontSize:'11px', color:theme.textMuted, whiteSpace:'nowrap' }}>{tool==='text' ? '크기' : '굵기'}</span>
             <input type="range" min="1" max="50" value={strokeWidth} onChange={(e) => setStrokeWidth(Number(e.target.value))} style={{ width:'70px' }} />
             <span style={{ fontSize:'11px', color:theme.textSubtle, minWidth:'20px' }}>{tool==='text' ? Math.max(12,strokeWidth*3) : strokeWidth}</span>
           </div>
+          )}
 
           {/* 선 스타일 */}
+          {!isViewOnly && (
           <div style={{ display:'flex', gap:'4px', alignItems:'center', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
             <button style={dashBtn(currentDash==='solid')} onClick={() => setCurrentDash('solid')} title="실선">—</button>
             <button style={dashBtn(currentDash==='dashed')} onClick={() => setCurrentDash('dashed')} title="파선">- -</button>
             <button style={dashBtn(currentDash==='dotted')} onClick={() => setCurrentDash('dotted')} title="점선">···</button>
           </div>
+          )}
 
           {/* 투명도 */}
+          {!isViewOnly && (
           <div style={{ display:'flex', alignItems:'center', gap:'6px', borderRight:`2px solid ${theme.border}`, paddingRight:'12px' }}>
             <span style={{ fontSize:'11px', color:theme.textMuted }}>투명도</span>
             <input type="range" min="10" max="100" value={Math.round(currentOpacity*100)} onChange={(e) => setCurrentOpacity(Number(e.target.value)/100)} style={{ width:'60px' }} />
             <span style={{ fontSize:'11px', color:theme.textSubtle, minWidth:'28px' }}>{Math.round(currentOpacity*100)}%</span>
           </div>
+          )}
 
           {/* 액션 버튼 */}
           <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
-            <button onClick={handleUndo} title="실행 취소 (Ctrl+Z)" style={iconBtn}><Undo2 size={22}/></button>
-            <button onClick={handleRedo} title="다시 실행 (Ctrl+Y)" style={iconBtn}><Redo2 size={22}/></button>
-            <button onClick={() => setShowGrid(v => !v)} title="그리드 토글" style={{ ...iconBtn, color: showGrid?'#3b82f6':'#9ca3af' }}><Grid2X2 size={22}/></button>
-            <button onClick={() => setIsSnapEnabled(v => !v)} title="그리드 스냅 ON/OFF" style={{ ...iconBtn, color: isSnapEnabled?'#3b82f6':'#9ca3af' }}><Magnet size={22}/></button>
-            <button onClick={handleDownloadPNG} title="PNG 저장" style={iconBtn}><Download size={22}/></button>
-            <button onClick={handleExportJSON} title="JSON 내보내기" style={iconBtn}><FileJson size={22}/></button>
-            <button onClick={() => importInputRef.current?.click()} title="JSON 가져오기" style={iconBtn}><Upload size={22}/></button>
-            <button onClick={() => imageInputRef.current?.click()} title="이미지 삽입" style={iconBtn}><ImageIcon size={22}/></button>
-            <button onClick={handleClearAll} title="전체 지우기" style={{ ...iconBtn, color:'#ef4444' }}><Trash2 size={22}/></button>
+            {isViewOnly ? (
+              <div style={{ display:'flex', alignItems:'center', gap:'6px', padding:'4px 10px', backgroundColor:'#fef3c7', border:'1px solid #f59e0b', borderRadius:'8px', color:'#92400e', fontSize:'12px', fontWeight:'bold' }}>
+                👁️ 읽기 전용
+              </div>
+            ) : (
+              <>
+                <button onClick={handleUndo} title="실행 취소 (Ctrl+Z)" style={iconBtn}><Undo2 size={22}/></button>
+                <button onClick={handleRedo} title="다시 실행 (Ctrl+Y)" style={iconBtn}><Redo2 size={22}/></button>
+                <button onClick={() => setShowGrid(v => !v)} title="그리드 토글" style={{ ...iconBtn, color: showGrid?'#3b82f6':'#9ca3af' }}><Grid2X2 size={22}/></button>
+                <button onClick={() => setIsSnapEnabled(v => !v)} title="그리드 스냅 ON/OFF" style={{ ...iconBtn, color: isSnapEnabled?'#3b82f6':'#9ca3af' }}><Magnet size={22}/></button>
+                <button onClick={handleDownloadPNG} title="PNG 저장" style={iconBtn}><Download size={22}/></button>
+                <button onClick={handleExportJSON} title="JSON 내보내기" style={iconBtn}><FileJson size={22}/></button>
+                <button onClick={() => importInputRef.current?.click()} title="JSON 가져오기" style={iconBtn}><Upload size={22}/></button>
+                <button onClick={() => imageInputRef.current?.click()} title="이미지 삽입" style={iconBtn}><ImageIcon size={22}/></button>
+                <button onClick={handleClearAll} title="전체 지우기" style={{ ...iconBtn, color:'#ef4444' }}><Trash2 size={22}/></button>
+              </>
+            )}
             <button onClick={() => setShowHelp(v => !v)} title="단축키 도움말 (?)" style={iconBtn}><HelpCircle size={22}/></button>
             <button onClick={() => setIsDarkMode(v => !v)} title={isDarkMode ? '라이트 모드' : '다크 모드'} style={{ ...iconBtn, color: isDarkMode ? '#f59e0b' : '#6b7280' }}>
               {isDarkMode ? <Sun size={22}/> : <Moon size={22}/>}
@@ -1236,15 +1346,34 @@ export default function Board() {
       )}
 
       {/* 접속자 목록 */}
-      <div style={{ position:'absolute', top:'20px', right:'20px', zIndex:10, backgroundColor: theme.panel, padding:'14px', borderRadius:'12px', boxShadow: theme.shadow, width:'150px' }}>
+      <div style={{ position:'absolute', top:'20px', right:'20px', zIndex:10, backgroundColor: theme.panel, padding:'14px', borderRadius:'12px', boxShadow: theme.shadow, width:'170px' }}>
         <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', fontSize:'14px', fontWeight:'bold', color: theme.text }}>
           <Users size={18}/> 온라인 ({users.length})
         </div>
-        {users.map((u, i) => (
-          <div key={i} style={{ fontSize:'13px', color: theme.textMuted, display:'flex', alignItems:'center', gap:'5px', marginBottom:'4px' }}>
-            <div style={{ width:'6px', height:'6px', borderRadius:'50%', backgroundColor:'#22c55e' }}/> {u}
+        {users.map((u) => {
+          const isMe = u.nickname === nickname;
+          const isFollowing = followingUserId === u.id;
+          return (
+            <div key={u.id} style={{ fontSize:'13px', color: theme.textMuted, display:'flex', alignItems:'center', gap:'5px', marginBottom:'4px' }}>
+              <div style={{ width:'6px', height:'6px', borderRadius:'50%', backgroundColor:'#22c55e', flexShrink:0 }}/>
+              <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{u.nickname}</span>
+              {!isMe && (
+                <button
+                  onClick={() => setFollowingUserId(isFollowing ? null : u.id)}
+                  title={isFollowing ? '팔로우 중지' : '화면 따라가기'}
+                  style={{ background:'none', border:'none', cursor:'pointer', padding:'1px 2px', fontSize:'13px', color: isFollowing ? '#3b82f6' : theme.textSubtle, borderRadius:'3px' }}
+                >
+                  {isFollowing ? '👁️' : '👁'}
+                </button>
+              )}
+            </div>
+          );
+        })}
+        {followingUserId && (
+          <div style={{ marginTop:'6px', padding:'4px 6px', backgroundColor:'#eff6ff', borderRadius:'6px', fontSize:'11px', color:'#3b82f6', fontWeight:'bold' }}>
+            📺 화면 따라가는 중
           </div>
-        ))}
+        )}
       </div>
 
       {/* 채팅창 */}
@@ -1316,6 +1445,17 @@ export default function Board() {
             padding:'2px 4px', caretColor:currentColor,
           }} rows={1}/>
       )}
+
+      {/* 이모지 반응 오버레이 */}
+      {emojiReactions.map((r) => {
+        const sc = canvasToScreen(r.x, r.y);
+        return (
+          <div key={r.id} style={{ position:'absolute', left:sc.x, top:sc.y, zIndex:30, pointerEvents:'none', transform:'translate(-50%,-50%)', textAlign:'center' }}>
+            <div style={{ fontSize:'32px', animation:'emojiPop 1.8s ease forwards', display:'inline-block' }}>{r.emoji}</div>
+            <div style={{ fontSize:'10px', color: theme.textMuted, backgroundColor: theme.panel, padding:'1px 5px', borderRadius:'6px', whiteSpace:'nowrap', animation:'emojiPop 1.8s ease forwards' }}>{r.nickname}</div>
+          </div>
+        );
+      })}
 
       {/* 토스트 알림 */}
       <div style={{ position:'fixed', bottom:'80px', left:'20px', zIndex:200, display:'flex', flexDirection:'column', gap:'8px', pointerEvents:'none' }}>

@@ -19,12 +19,12 @@ let users = {};
 
 io.on('connection', (socket) => {
   users[socket.id] = `User-${socket.id.substring(0, 4)}`;
-  io.emit('user_list', Object.values(users));
+  io.emit('user_list', Object.entries(users).map(([id, nickname]) => ({ id, nickname })));
 
   // 닉네임 설정
   socket.on('set_nickname', (nickname) => {
     users[socket.id] = nickname;
-    io.emit('user_list', Object.values(users));
+    io.emit('user_list', Object.entries(users).map(([id, n]) => ({ id, nickname: n })));
     socket.broadcast.emit('user_joined', nickname);
   });
 
@@ -62,10 +62,32 @@ io.on('connection', (socket) => {
   });
 
   // 연결 해제
+  // 뷰포트 공유 (Follow Me)
+  socket.on('viewport_update', (data) => {
+    socket.broadcast.emit('viewport_update', {
+      id: socket.id,
+      nickname: users[socket.id],
+      scale: data.scale,
+      x: data.x,
+      y: data.y,
+    });
+  });
+
+  // 이모지 반응 (Cursor Chat)
+  socket.on('emoji_reaction', (data) => {
+    io.emit('emoji_reaction', {
+      id: data.id,
+      x: data.x,
+      y: data.y,
+      emoji: data.emoji,
+      nickname: users[socket.id],
+    });
+  });
+
   socket.on('disconnect', () => {
     const leftNickname = users[socket.id];
     delete users[socket.id];
-    io.emit('user_list', Object.values(users));
+    io.emit('user_list', Object.entries(users).map(([id, n]) => ({ id, nickname: n })));
     io.emit('cursor_leave', socket.id); // 커서 제거 알림
     if (leftNickname) socket.broadcast.emit('user_left', leftNickname);
   });
