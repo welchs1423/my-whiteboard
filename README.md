@@ -1,13 +1,22 @@
 # 🎨 Real-time Whiteboard
 
-React와 Konva.js를 활용한 실시간 협업 화이트보드 토이 프로젝트입니다.
+<p align="left">
+  <img src="https://img.shields.io/badge/react-%2320232a.svg?style=for-the-badge&logo=react&logoColor=%2361DAFB" alt="React" />
+  <img src="https://img.shields.io/badge/typescript-%23007ACC.svg?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/node.js-6DA55F?style=for-the-badge&logo=node.js&logoColor=white" alt="Node.js" />
+  <img src="https://img.shields.io/badge/Socket.io-black?style=for-the-badge&logo=socket.io&badgeColor=010101" alt="Socket.io" />
+  <img src="https://img.shields.io/badge/MongoDB-%234ea94b.svg?style=for-the-badge&logo=mongodb&logoColor=white" alt="MongoDB" />
+</p>
+
+A real-time collaborative whiteboard web application built with React, Konva.js, and Socket.io.
 
 ## 🚀 Tech Stack
 
 - **Frontend:** React, TypeScript, Vite
 - **Graphics:** Konva.js (react-konva)
 - **State Management:** Zustand
-- **Real-time:** Socket.io-client, Node.js, Express
+- **Backend & Real-time:** Node.js, Express, Socket.io, Multer
+- **Database:** MongoDB (Mongoose)
 
 ## ✨ Features
 
