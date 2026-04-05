@@ -52,6 +52,7 @@ const getCursorColor = (id: string) => {
 export default function Board() {
   // ── 상태 ──
   const [isJoined, setIsJoined] = useState(false);
+  const [roomId, setRoomId] = useState(() => new URLSearchParams(window.location.search).get('room') || 'main');
   const [nickname, setNickname] = useState('');
   const [elements, setElements] = useState<DrawElement[]>([]);
   const [currentColor, setCurrentColor] = useState(COLORS[0]);
@@ -121,7 +122,6 @@ export default function Board() {
   const panStart = useRef<{ mx: number; my: number; sx: number; sy: number } | null>(null);
   const clipboard = useRef<DrawElement | null>(null);
   const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
-  // 최신값 ref (useEffect 스테일 클로저 방지)
   const elementsRef = useRef<DrawElement[]>([]);
   // ── 히스토리 훅 ──
   const { saveHistoryWith, handleUndo, handleRedo, historyRef, historyStepRef } = useHistory(
@@ -463,7 +463,7 @@ export default function Board() {
   }, [stageScale, stagePos, isJoined]);
 
   // 마우스 업 (캔버스 밖)
-  useEffect(() => {
+useEffect(() => {
     const up = () => {
       if (isPanning.current) {
         isPanning.current = false; panStart.current = null; return;
@@ -484,11 +484,12 @@ export default function Board() {
       isDrawing.current = false;
       setElements((latest) => { saveHistoryWith(latest); return latest; });
     };
-    // 중간 버튼 mouseup도 처리
+    
     const upAll = (e: MouseEvent) => { if (e.button === 1 && isPanning.current) { isPanning.current = false; panStart.current = null; } };
     window.addEventListener('mouseup', up);
     window.addEventListener('mouseup', upAll);
     return () => { window.removeEventListener('mouseup', up); window.removeEventListener('mouseup', upAll); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 스페이스바 (패닝 모드)
@@ -567,17 +568,36 @@ export default function Board() {
 
   // ── 핸들러 ──
 
-  const handleJoin = (viewOnly = false) => {
-    const name = viewOnly ? '관람자' : nickname.trim();
-    if (!name) return;
-    if (viewOnly) {
-      setNickname('관람자');
-      setIsViewOnly(true);
-    }
-    socket.emit('set_nickname', name);
-    setIsJoined(true);
-  };
+const handleJoin = (viewOnly = false) => {
+  const name = viewOnly ? '관람자' : nickname.trim();
+  if (!name || !roomId.trim()) return;
+  if (viewOnly) {
+    setNickname('관람자');
+    setIsViewOnly(true);
+  }
+  
+  // URL을 자동으로 변경하여 공유하기 쉽게 만듬
+  window.history.pushState({}, '', `?room=${roomId}`);
+  
+  // 기존 'set_nickname' 대신 'join_room' 발송
+  socket.emit('join_room', { nickname: name, room: roomId });
+  setIsJoined(true);
+};
 
+// 3. 렌더링 영역: LoginScreen 호출부 교체
+if (!isJoined) {
+    return (
+      <LoginScreen
+        isDarkMode={isDarkMode} 
+        setIsDarkMode={setIsDarkMode}
+        nickname={nickname} 
+        setNickname={setNickname}
+        roomId={roomId}
+        setRoomId={setRoomId}
+        onJoin={handleJoin}
+      />
+    );
+  }
   const handleSendMessage = () => {
     if (!inputText.trim()) return;
     socket.emit('send_message', {
@@ -705,7 +725,7 @@ export default function Board() {
       return;
     }
 
-    // 그리기 도구
+// 📌 그리기 도구 시작 부분 (함수 맨 아래쪽)
     isDrawing.current = true;
     const newEl: DrawElement = {
       id: generateId(), tool,
@@ -714,7 +734,11 @@ export default function Board() {
       filled: isFilled, dash: currentDash, opacity: currentOpacity,
       ...(tool === 'sticky' ? { stickyBg } : {}),
     };
-    setElements((prev) => [...prev, newEl]);
+setElements((prev) => {
+      const upd = [...prev, newEl];
+      socket.emit('update_element', newEl);
+      return upd;
+    });
   };
 
   const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -767,17 +791,22 @@ export default function Board() {
 
     if (!isDrawing.current) return;
 
-    setElements((prev) => {
+setElements((prev) => {
       if (prev.length === 0) return prev;
       const upd = [...prev];
       const last = { ...upd[upd.length - 1] };
+      
       if (last.tool === 'pen' || last.tool === 'eraser') {
         last.points = [...last.points, snap(point.x), snap(point.y)];
       } else {
         last.points = [last.points[0], last.points[1], snap(point.x), snap(point.y)];
       }
+      
       upd[upd.length - 1] = last;
-      socket.emit('draw_line', upd);
+      
+      // 📌 렉 유발 원인이었던 draw_line (전체 배열 전송) 대신 update_element (단일 객체 전송)로 변경!
+      socket.emit('update_element', last); 
+      
       return upd;
     });
   };
@@ -955,11 +984,15 @@ export default function Board() {
   });
 
   // ── 입장 화면 ──
-  if (!isJoined) {
+if (!isJoined) {
     return (
       <LoginScreen
-        isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode}
-        nickname={nickname} setNickname={setNickname}
+        isDarkMode={isDarkMode} 
+        setIsDarkMode={setIsDarkMode}
+        nickname={nickname} 
+        setNickname={setNickname}
+        roomId={roomId}       /* 👈 추가됨 */
+        setRoomId={setRoomId} /* 👈 추가됨 */
         onJoin={handleJoin}
       />
     );
@@ -1219,9 +1252,9 @@ export default function Board() {
 
       {/* 접속자 목록 */}
       <div style={{ position:'absolute', top:'20px', right:'20px', zIndex:10, backgroundColor: theme.panel, padding:'14px', borderRadius:'12px', boxShadow: theme.shadow, width:'170px' }}>
-        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', fontSize:'14px', fontWeight:'bold', color: theme.text }}>
-          <Users size={18}/> 온라인 ({users.length})
-        </div>
+<div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', fontSize:'14px', fontWeight:'bold', color: theme.text }}>
+  <Users size={18}/> {roomId} 방 ({users.length}명)
+</div>
         {users.map((u) => {
           const isMe = u.nickname === nickname;
           const isFollowing = followingUserId === u.id;

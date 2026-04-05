@@ -2,94 +2,136 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const mongoose = require('mongoose');
 
 const app = express();
 app.use(cors());
-
 const server = http.createServer(app);
 
 const io = new Server(server, {
-  cors: {
-    origin: "http://localhost:5173",
-    methods: ["GET", "POST"]
-  }
+  cors: { origin: "http://localhost:5173", methods: ["GET", "POST"] }
 });
 
+mongoose.connect('mongodb://localhost:27017/whiteboard_db')
+  .then(() => console.log('MongoDB Connected!'))
+  .catch(err => console.error('DB Connection Error:', err));
+
+const BoardSchema = new mongoose.Schema({
+  room: { type: String, required: true },
+  elements: Array,
+  updatedAt: { type: Date, default: Date.now }
+});
+const Board = mongoose.model('Board', BoardSchema);
+
 let users = {};
+let roomElements = {};
+let saveTimeouts = {};
+
+const debouncedSave = (room) => {
+  if (saveTimeouts[room]) clearTimeout(saveTimeouts[room]);
+  saveTimeouts[room] = setTimeout(async () => {
+    try {
+      await Board.findOneAndUpdate(
+        { room },
+        { elements: roomElements[room] || [], updatedAt: Date.now() },
+        { upsert: true }
+      );
+    } catch (err) { console.error('DB Save Error:', err); }
+  }, 2000);
+};
 
 io.on('connection', (socket) => {
-  users[socket.id] = `User-${socket.id.substring(0, 4)}`;
-  io.emit('user_list', Object.entries(users).map(([id, nickname]) => ({ id, nickname })));
+  // 방 접속 처리
+  socket.on('join_room', async ({ nickname, room }) => {
+    socket.join(room);
+    users[socket.id] = { nickname, room };
 
-  // 닉네임 설정
-  socket.on('set_nickname', (nickname) => {
-    users[socket.id] = nickname;
-    io.emit('user_list', Object.entries(users).map(([id, n]) => ({ id, nickname: n })));
-    socket.broadcast.emit('user_joined', nickname);
+    if (!roomElements[room]) {
+      const savedData = await Board.findOne({ room });
+      roomElements[room] = savedData ? savedData.elements : [];
+    }
+    
+    socket.emit('draw_line', roomElements[room]);
+
+    const roomUsers = Object.entries(users)
+      .filter(([_, u]) => u.room === room)
+      .map(([id, u]) => ({ id, nickname: u.nickname }));
+      
+    io.to(room).emit('user_list', roomUsers);
+    socket.to(room).emit('user_joined', nickname);
   });
 
-  // 드로잉
   socket.on('draw_line', (data) => {
-    socket.broadcast.emit('draw_line', data);
+    const user = users[socket.id];
+    if (!user) return;
+    socket.to(user.room).emit('draw_line', data);
+    roomElements[user.room] = data;
+    debouncedSave(user.room);
+  });
+
+  socket.on('update_element', (el) => {
+    const user = users[socket.id];
+    if (!user) return;
+    socket.to(user.room).emit('update_element', el);
+    
+    if (!roomElements[user.room]) roomElements[user.room] = [];
+    const idx = roomElements[user.room].findIndex(e => e.id === el.id);
+    if (idx !== -1) roomElements[user.room][idx] = el;
+    else roomElements[user.room].push(el);
+    
+    debouncedSave(user.room);
   });
 
   socket.on('clear_all', () => {
-    socket.broadcast.emit('clear_all');
+    const user = users[socket.id];
+    if (!user) return;
+    socket.to(user.room).emit('clear_all');
+    roomElements[user.room] = [];
+    debouncedSave(user.room);
   });
 
-  // 실시간 커서 위치 공유
   socket.on('cursor_move', (pos) => {
-    socket.broadcast.emit('cursor_move', {
-      id: socket.id,
-      x: pos.x,
-      y: pos.y,
-      nickname: users[socket.id],
-    });
+    const user = users[socket.id];
+    if (user) socket.to(user.room).emit('cursor_move', { id: socket.id, x: pos.x, y: pos.y, nickname: user.nickname });
   });
 
-  // 채팅 입력 중 표시
   socket.on('typing', (nickname) => {
-    socket.broadcast.emit('typing', nickname);
+    const user = users[socket.id];
+    if (user) socket.to(user.room).emit('typing', nickname);
   });
 
   socket.on('stop_typing', (nickname) => {
-    socket.broadcast.emit('stop_typing', nickname);
+    const user = users[socket.id];
+    if (user) socket.to(user.room).emit('stop_typing', nickname);
   });
 
-  // 채팅 메시지
   socket.on('send_message', (messageData) => {
-    io.emit('receive_message', messageData);
+    const user = users[socket.id];
+    if (user) io.to(user.room).emit('receive_message', messageData);
   });
 
-  // 연결 해제
-  // 뷰포트 공유 (Follow Me)
   socket.on('viewport_update', (data) => {
-    socket.broadcast.emit('viewport_update', {
-      id: socket.id,
-      nickname: users[socket.id],
-      scale: data.scale,
-      x: data.x,
-      y: data.y,
-    });
+    const user = users[socket.id];
+    if (user) socket.to(user.room).emit('viewport_update', { id: socket.id, nickname: user.nickname, scale: data.scale, x: data.x, y: data.y });
   });
 
-  // 이모지 반응 (Cursor Chat)
   socket.on('emoji_reaction', (data) => {
-    io.emit('emoji_reaction', {
-      id: data.id,
-      x: data.x,
-      y: data.y,
-      emoji: data.emoji,
-      nickname: users[socket.id],
-    });
+    const user = users[socket.id];
+    if (user) io.to(user.room).emit('emoji_reaction', { id: data.id, x: data.x, y: data.y, emoji: data.emoji, nickname: user.nickname });
   });
 
   socket.on('disconnect', () => {
-    const leftNickname = users[socket.id];
-    delete users[socket.id];
-    io.emit('user_list', Object.entries(users).map(([id, n]) => ({ id, nickname: n })));
-    io.emit('cursor_leave', socket.id); // 커서 제거 알림
-    if (leftNickname) socket.broadcast.emit('user_left', leftNickname);
+    const user = users[socket.id];
+    if (user) {
+      delete users[socket.id];
+      const roomUsers = Object.entries(users)
+        .filter(([_, u]) => u.room === user.room)
+        .map(([id, u]) => ({ id, nickname: u.nickname }));
+        
+      io.to(user.room).emit('user_list', roomUsers);
+      io.to(user.room).emit('cursor_leave', socket.id);
+      socket.to(user.room).emit('user_left', user.nickname);
+    }
   });
 });
 

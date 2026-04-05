@@ -39,24 +39,43 @@ export function useSocketEvents({
 }: UseSocketEventsParams) {
   useEffect(() => {
     socket.on('draw_line', (data: DrawElement[]) => setElements(data));
+    
+    // 📌 최적화된 부분 동기화 리스너 추가
+    socket.on('update_element', (el: DrawElement) => {
+      setElements((prev) => {
+        const idx = prev.findIndex(e => e.id === el.id);
+        if (idx !== -1) {
+          const upd = [...prev];
+          upd[idx] = el;
+          return upd;
+        }
+        return [...prev, el];
+      });
+    });
+
     socket.on('clear_all', () => {
       setElements([]); setSelectedIndices(new Set());
       historyRef.current = [[]]; historyStepRef.current = 0;
     });
+    
     socket.on('user_list', (list: UserInfo[]) => setUsers(list));
     socket.on('receive_message', (msg: ChatMessage) => setMessages((p) => [...p, msg]));
+    
     socket.on('cursor_move', (data: CursorData & { id: string }) => {
       setCursors((p) => ({ ...p, [data.id]: { x: data.x, y: data.y, nickname: data.nickname } }));
     });
+    
     socket.on('cursor_leave', (id: string) => {
       setCursors((p) => { const n = { ...p }; delete n[id]; return n; });
       setUserViewports((p) => { const n = { ...p }; delete n[id]; return n; });
       setFollowingUserId((prev) => prev === id ? null : prev);
     });
+    
     socket.on('typing', (name: string) => setTypingUsers((p) => p.includes(name) ? p : [...p, name]));
     socket.on('stop_typing', (name: string) => setTypingUsers((p) => p.filter((n) => n !== name)));
     socket.on('user_joined', (name: string) => showToast(`${name}님이 입장했습니다`, 'join'));
     socket.on('user_left', (name: string) => showToast(`${name}님이 퇴장했습니다`, 'leave'));
+    
     socket.on('viewport_update', (data: UserViewport & { id: string }) => {
       setUserViewports((p) => ({ ...p, [data.id]: { scale: data.scale, x: data.x, y: data.y, nickname: data.nickname } }));
       if (followingUserRef.current === data.id) {
@@ -64,12 +83,14 @@ export function useSocketEvents({
         setStagePos({ x: data.x, y: data.y });
       }
     });
+    
     socket.on('emoji_reaction', (data: EmojiReaction) => {
       setEmojiReactions((p) => [...p, data]);
       setTimeout(() => setEmojiReactions((p) => p.filter((r) => r.id !== data.id)), 1800);
     });
+
     return () => {
-      ['draw_line', 'clear_all', 'user_list', 'receive_message', 'cursor_move', 'cursor_leave',
+      ['draw_line', 'update_element', 'clear_all', 'user_list', 'receive_message', 'cursor_move', 'cursor_leave',
         'typing', 'stop_typing', 'user_joined', 'user_left', 'viewport_update', 'emoji_reaction']
         .forEach((ev) => socket.off(ev));
     };
