@@ -2,7 +2,8 @@
 
 export type ToolType =
   | 'pen' | 'eraser' | 'rect' | 'circle' | 'text'
-  | 'arrow' | 'straight' | 'select' | 'sticky' | 'image' | 'triangle' | 'frame';
+  | 'arrow' | 'straight' | 'select' | 'sticky' | 'image' | 'triangle' | 'frame'
+  | 'bezier' | 'connector' | 'pin' | 'textbox' | 'shape';
 
 export type DashStyle = 'solid' | 'dashed' | 'dotted';
 export type LineCapStyle = 'round' | 'square' | 'butt';
@@ -24,6 +25,23 @@ export interface DrawElement {
   locked?: boolean;
   groupId?: string;
   frameTitle?: string;
+  // 속도 감응 선 굵기
+  widths?: number[];
+  // 그라디언트
+  gradientColors?: [string, string];
+  gradientAngle?: number;
+  // 커넥터
+  connectorFrom?: string;
+  connectorTo?: string;
+  // 리치 텍스트
+  fontStyle?: string;
+  textDecoration?: string;
+  fontFamily?: string;
+  textAlign?: string;
+  // 핀 댓글
+  pinText?: string;
+  // 도형 라이브러리
+  shapeName?: string;
 }
 
 export interface Bounds {
@@ -61,13 +79,17 @@ export function getElementBounds(el: DrawElement): Bounds | null {
     return { x: minX - pad, y: minY - pad, width: maxX - minX + pad * 2, height: maxY - minY + pad * 2 };
   }
 
-  if (['rect', 'circle', 'straight', 'arrow', 'sticky', 'triangle', 'frame'].includes(el.tool)) {
+  if (['rect', 'circle', 'straight', 'arrow', 'sticky', 'triangle', 'frame', 'bezier', 'textbox', 'shape', 'connector'].includes(el.tool)) {
     if (el.points.length < 4) return null;
     const x = Math.min(el.points[0], el.points[2]);
     const y = Math.min(el.points[1], el.points[3]);
     const w = Math.abs(el.points[2] - el.points[0]);
     const h = Math.abs(el.points[3] - el.points[1]);
     return { x: x - pad, y: y - pad, width: w + pad * 2, height: h + pad * 2 };
+  }
+
+  if (el.tool === 'pin') {
+    return { x: el.points[0] - 12, y: el.points[1] - 28, width: 120, height: 40 };
   }
 
   if (el.tool === 'text' && el.text) {

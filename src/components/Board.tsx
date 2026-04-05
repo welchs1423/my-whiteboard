@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { Stage, Layer, Rect } from 'react-konva';
+import { Stage, Layer, Rect, Image as KonvaImage } from 'react-konva';
 import Konva from 'konva';
+import QRCode from 'qrcode';
 import {
   Users, ChevronDown,
   ChevronsUp, ChevronUp, ChevronsDown, ZoomIn, ZoomOut, Copy,
@@ -31,13 +32,15 @@ import LayerPanel from './LayerPanel';
 import TimelinePlayer, { type TimelineEvent } from './TimelinePlayer';
 import FramePanel from './FramePanel';
 import VoiceChat from './VoiceChat';
+import ShapeLibrary from './ShapeLibrary';
+import PresentationMode from './PresentationMode';
 
 const socket = io('http://localhost:3001');
 
 // ── 인터페이스 ─────────────────────────────────────────────────────────────
 
 interface CursorData { x: number; y: number; nickname: string; }
-interface TextInputState { x: number; y: number; value: string; targetIdx?: number; }
+interface TextInputState { x: number; y: number; value: string; targetIdx?: number; width?: number; height?: number; }
 interface ChatMessage { text: string; sender: string; time: string; }
 interface UserInfo { id: string; nickname: string; }
 interface EmojiReaction { id: string; x: number; y: number; emoji: string; nickname: string; }
@@ -65,6 +68,13 @@ export default function Board() {
     currentLineCap, setCurrentLineCap,
     currentOpacity, setCurrentOpacity,
     stickyBg, setStickyBg,
+    currentShapeName, setCurrentShapeName,
+    gradientColors, setGradientColors,
+    gradientAngle, setGradientAngle,
+    fontStyle, setFontStyle,
+    textDecoration, setTextDecoration,
+    fontFamily, setFontFamily,
+    textAlign, setTextAlign,
     isSmoothing, setIsSmoothing, isSmoothingRef,
     isSmartShape, setIsSmartShape, isSmartShapeRef,
     isEmojiMode, setIsEmojiMode,
@@ -76,6 +86,11 @@ export default function Board() {
     showHelp, setShowHelp, showHelpRef,
     isDragOver, setIsDragOver,
     isDarkMode, setIsDarkMode,
+    showShapeLibrary, setShowShapeLibrary,
+    isLaserMode, setIsLaserMode,
+    setBgImageUrl,
+    isPresentingMode, setIsPresentingMode,
+    showQRCode, setShowQRCode,
     toasts, showToast,
     theme,
   } = useBoardUI();
@@ -138,6 +153,7 @@ export default function Board() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const bgImageInputRef = useRef<HTMLInputElement>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isDraggingSelected = useRef(false);
   const dragStartPos = useRef<{ x: number; y: number } | null>(null);
@@ -151,6 +167,16 @@ export default function Board() {
   const elementsRef = useRef<DrawElement[]>([]);
   const selectedIndicesRef = useRef<Set<number>>(new Set());
   const followingUserRef = useRef<string | null>(null);
+  // 신규 refs (베지어/커넥터/속도 감응/레이저)
+  const lastPenTime = useRef<number>(0);
+  const bezierPhase = useRef<number>(0);
+  const bezierAnchor = useRef<number[]>([]);
+  const connectorPhase = useRef<number>(0);
+  const connectorFirst = useRef<{ id: string; x: number; y: number } | null>(null);
+  // 신규 state
+  const [lasers, setLasers] = useState<Record<string, { x: number; y: number; ts: number; nickname: string }>>({});
+  const [bgKonvaImage, setBgKonvaImage] = useState<HTMLImageElement | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
 
   // ── 히스토리 훅 ──
   const { saveHistoryWith, handleUndo, handleRedo, historyRef, historyStepRef } = useHistory(
@@ -499,6 +525,102 @@ export default function Board() {
     socket.emit('set_permission', { targetId, permission: perm, room: roomId });
   }, [roomId]);
 
+  // ── SVG 내보내기 ──
+  const handleExportSVG = useCallback(() => {
+    const els = elementsRef.current;
+    const svgParts: string[] = [];
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    els.forEach(el => {
+      const b = getElementBounds(el);
+      if (b) {
+        minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+        maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
+      }
+    });
+    if (minX === Infinity) { minX = 0; minY = 0; maxX = 800; maxY = 600; }
+    const pad = 20;
+    const vw = maxX - minX + pad * 2, vh = maxY - minY + pad * 2;
+    const ox = minX - pad, oy = minY - pad;
+
+    els.forEach(el => {
+      const c = el.color; const sw = el.strokeWidth; const op = el.opacity ?? 1;
+      const fill = el.filled ? c : 'none';
+      if (el.tool === 'rect' && el.points.length >= 4) {
+        const x = Math.min(el.points[0], el.points[2]) - ox;
+        const y = Math.min(el.points[1], el.points[3]) - oy;
+        const w = Math.abs(el.points[2] - el.points[0]);
+        const h = Math.abs(el.points[3] - el.points[1]);
+        svgParts.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${c}" stroke-width="${sw}" opacity="${op}"/>`);
+      } else if (el.tool === 'circle' && el.points.length >= 4) {
+        const cx = (el.points[0] + el.points[2]) / 2 - ox;
+        const cy = (el.points[1] + el.points[3]) / 2 - oy;
+        const rx = Math.abs(el.points[2] - el.points[0]) / 2;
+        const ry = Math.abs(el.points[3] - el.points[1]) / 2;
+        svgParts.push(`<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${fill}" stroke="${c}" stroke-width="${sw}" opacity="${op}"/>`);
+      } else if ((el.tool === 'pen' || el.tool === 'straight' || el.tool === 'bezier') && el.points.length >= 4) {
+        const pts = el.points;
+        let d = `M ${pts[0]-ox} ${pts[1]-oy}`;
+        for (let j = 2; j < pts.length - 1; j += 2) d += ` L ${pts[j]-ox} ${pts[j+1]-oy}`;
+        svgParts.push(`<path d="${d}" fill="${fill}" stroke="${c}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" opacity="${op}"/>`);
+      } else if (el.tool === 'text' && el.text) {
+        const x = el.points[0] - ox, y = el.points[1] - oy;
+        const fs = el.fontStyle || 'normal';
+        svgParts.push(`<text x="${x}" y="${y}" fill="${c}" font-size="${el.fontSize||20}" font-family="${el.fontFamily||'sans-serif'}" font-style="${fs.includes('italic')?'italic':'normal'}" font-weight="${fs.includes('bold')?'bold':'normal'}" opacity="${op}">${el.text}</text>`);
+      } else if (el.tool === 'triangle' && el.points.length >= 4) {
+        const [x1,y1,x2,y2] = el.points;
+        const mid = (x1+x2)/2;
+        svgParts.push(`<polygon points="${mid-ox},${y1-oy} ${x2-ox},${y2-oy} ${x1-ox},${y2-oy}" fill="${fill}" stroke="${c}" stroke-width="${sw}" opacity="${op}"/>`);
+      } else if (el.tool === 'arrow' && el.points.length >= 4) {
+        const [x1,y1,x2,y2] = el.points;
+        svgParts.push(`<line x1="${x1-ox}" y1="${y1-oy}" x2="${x2-ox}" y2="${y2-oy}" stroke="${c}" stroke-width="${sw}" marker-end="url(#arrow)" opacity="${op}"/>`);
+      }
+    });
+
+    const arrowDef = `<defs><marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="${els.find(e=>e.tool==='arrow')?.color||'black'}"/></marker></defs>`;
+    const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${vw}" height="${vh}" viewBox="0 0 ${vw} ${vh}">${arrowDef}${svgParts.join('\n')}</svg>`;
+    const blob = new Blob([svgContent], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.download = `whiteboard-${Date.now()}.svg`; a.href = url;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('SVG로 내보냈습니다', 'info');
+  }, [showToast]);
+
+  // ── QR 코드 생성 ──
+  const handleShowQRCode = useCallback(async () => {
+    const url = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
+    try {
+      const dataUrl = await QRCode.toDataURL(url, { width: 200, margin: 2 });
+      setQrDataUrl(dataUrl);
+      setShowQRCode(true);
+    } catch (e) { console.error(e); }
+  }, [roomId, setShowQRCode]);
+
+  // ── 배경 이미지 ──
+  const handleBgImageFile = useCallback((file: File) => {
+    if (!file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result as string;
+      setBgImageUrl(dataUrl);
+      const img = new window.Image();
+      img.src = dataUrl;
+      img.onload = () => setBgKonvaImage(img);
+    };
+    reader.readAsDataURL(file);
+  }, [setBgImageUrl]);
+
+  // ── 레이저 포인터 emit (mouse move 시) ──
+  const handleLaserMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (!isLaserMode) return;
+    const stage = e.target.getStage();
+    if (!stage) return;
+    const pos = getCanvasPos(stage);
+    if (!pos) return;
+    socket.emit('laser_move', { x: pos.x, y: pos.y });
+  }, [isLaserMode, getCanvasPos]);
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const snap = useCallback((v: number) => isSnapEnabledRef.current ? Math.round(v / 28) * 28 : v, []);
 
@@ -542,6 +664,30 @@ export default function Board() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showTimeline]);
+
+  // 레이저 포인터 비활성화 시 알림
+  useEffect(() => {
+    if (!isLaserMode) {
+      socket.emit('laser_stop');
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLaserMode]);
+
+  // 레이저 점 자동 만료 (2초)
+  useEffect(() => {
+    if (Object.keys(lasers).length === 0) return;
+    const t = setInterval(() => {
+      const now = Date.now();
+      setLasers(prev => {
+        const filtered: typeof prev = {};
+        for (const [id, l] of Object.entries(prev)) {
+          if (now - l.ts < 2000) filtered[id] = l;
+        }
+        return filtered;
+      });
+    }, 500);
+    return () => clearInterval(t);
+  }, [lasers]);
 
   useEffect(() => {
     const up = () => {
@@ -611,6 +757,11 @@ export default function Board() {
     setEmojiReactions, showToast,
     followingUserRef, historyRef, historyStepRef,
     setHostId, setPermissions, setTimelineEvents,
+    setLasers,
+    onPresentingFrame: (frameId) => {
+      const frame = elementsRef.current.find(el => el.id === frameId && el.tool === 'frame');
+      if (frame) handleNavigateToFrame(frame);
+    },
   });
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -680,7 +831,12 @@ export default function Board() {
     if (textInput.targetIdx !== undefined) {
       setElements((prev) => {
         const upd = [...prev];
-        upd[textInput.targetIdx!] = { ...upd[textInput.targetIdx!], text: textInput.value };
+        const el = upd[textInput.targetIdx!];
+        if (el?.tool === 'pin') {
+          upd[textInput.targetIdx!] = { ...el, pinText: textInput.value };
+        } else {
+          upd[textInput.targetIdx!] = { ...el, text: textInput.value };
+        }
         saveHistoryWith(upd); 
         socket.emit('update_element', upd[textInput.targetIdx!]);
         return upd;
@@ -692,6 +848,10 @@ export default function Board() {
         points: [textInput.x, textInput.y], color: currentColor,
         strokeWidth, text: textInput.value, fontSize,
         dash: currentDash, opacity: currentOpacity,
+        fontStyle: fontStyle || 'normal',
+        textDecoration: textDecoration || '',
+        fontFamily: fontFamily || 'sans-serif',
+        textAlign: textAlign || 'left',
       };
       setElements((prev) => {
         const upd = [...prev, newEl];
@@ -709,10 +869,12 @@ export default function Board() {
     isDrawing, isPanning, panStart, spaceHeldRef, stagePosRef,
     isBoxSelecting, boxSelectStart, isDraggingSelected, dragStartPos, dragOriginals,
     elementsRef, toolRef, isSmoothingRef, isSmartShapeRef, lastCursorEmit,
+    lastPenTime, bezierPhase, bezierAnchor, connectorPhase, connectorFirst,
     // State
     contextMenu, elements, selectedIndices, tool,
     isEmojiMode, selectedEmoji, nickname, isViewOnly,
     currentColor, strokeWidth, isFilled, currentDash, currentLineCap, currentOpacity, stickyBg,
+    currentShapeName, gradientColors, gradientAngle,
     // Setters
     setContextMenu, setEmojiReactions, setTextInput,
     setElements, setSelectedIndices, setBoxSelectRect, setStagePos,
@@ -854,6 +1016,20 @@ export default function Board() {
         showLayerPanel={showLayerPanel} setShowLayerPanel={setShowLayerPanel}
         showFramePanel={showFramePanel} setShowFramePanel={setShowFramePanel}
         showTimeline={showTimeline} setShowTimeline={setShowTimeline}
+        // 신규 props
+        currentShapeName={currentShapeName}
+        showShapeLibrary={showShapeLibrary} setShowShapeLibrary={setShowShapeLibrary}
+        gradientColors={gradientColors} setGradientColors={setGradientColors}
+        gradientAngle={gradientAngle} setGradientAngle={setGradientAngle}
+        fontStyle={fontStyle} setFontStyle={setFontStyle}
+        textDecoration={textDecoration} setTextDecoration={setTextDecoration}
+        fontFamily={fontFamily} setFontFamily={setFontFamily}
+        textAlign={textAlign} setTextAlign={setTextAlign}
+        isLaserMode={isLaserMode} setIsLaserMode={setIsLaserMode}
+        isPresentingMode={isPresentingMode} setIsPresentingMode={setIsPresentingMode}
+        bgImageInputRef={bgImageInputRef}
+        handleExportSVG={handleExportSVG}
+        handleShowQRCode={handleShowQRCode}
       />
 
       {/* 줌 인디케이터 */}
@@ -1132,20 +1308,21 @@ export default function Board() {
         scaleY={stageScale}
         x={stagePos.x}
         y={stagePos.y}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onDblClick={handleDblClick}
+        onMouseDown={isLaserMode ? undefined : handleMouseDown}
+        onMouseMove={(e) => { if (isLaserMode) handleLaserMove(e); else handleMouseMove(e); }}
+        onMouseUp={isLaserMode ? undefined : handleMouseUp}
+        onDblClick={isLaserMode ? undefined : handleDblClick}
         onContextMenu={(e) => {
           e.evt.preventDefault();
           if (selectedIndices.size > 0) {
             setContextMenu({ x: e.evt.clientX, y: e.evt.clientY });
           }
         }}
-        style={{ cursor: getCursor() }}
+        style={{ cursor: isLaserMode ? 'none' : getCursor() }}
       >
         <Layer>
-          {elements.map((el, i) => hiddenIndices.has(i) ? null : renderElement(el, i, stageScale, imageCache))}
+          {bgKonvaImage && <KonvaImage image={bgKonvaImage} x={0} y={0} opacity={0.35} listening={false} />}
+          {elements.map((el, i) => hiddenIndices.has(i) ? null : renderElement(el, i, stageScale, imageCache, elements))}
           {selectionRects}
           {groupRects}
           {boxSelectRect && (
@@ -1161,6 +1338,68 @@ export default function Board() {
           )}
         </Layer>
       </Stage>
+
+      {/* 레이저 포인터 오버레이 */}
+      {Object.entries(lasers).map(([id, l]) => {
+        const sc = canvasToScreen(l.x, l.y);
+        const age = (Date.now() - l.ts) / 2000;
+        return (
+          <div key={id} style={{ position:'absolute', left:sc.x - 10, top:sc.y - 10, zIndex:40, pointerEvents:'none' }}>
+            <div style={{ width:'20px', height:'20px', borderRadius:'50%', backgroundColor:'rgba(239,68,68,0.8)', boxShadow:'0 0 12px 4px rgba(239,68,68,0.5)', opacity: Math.max(0, 1 - age) }}/>
+            <div style={{ position:'absolute', top:'22px', left:'50%', transform:'translateX(-50%)', fontSize:'10px', color:'white', backgroundColor:'rgba(239,68,68,0.8)', padding:'1px 5px', borderRadius:'4px', whiteSpace:'nowrap' }}>{l.nickname}</div>
+          </div>
+        );
+      })}
+
+      {/* 내 레이저 포인터 (마우스 위치) */}
+      {isLaserMode && (
+        <style>{`* { cursor: none !important; }`}</style>
+      )}
+
+      {/* hidden 입력: 배경 이미지 */}
+      <input ref={bgImageInputRef} type="file" accept="image/*" style={{ display:'none' }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleBgImageFile(f); e.target.value = ''; }}
+      />
+
+      {/* QR 코드 모달 */}
+      {showQRCode && qrDataUrl && (
+        <div style={{ position:'fixed', inset:0, zIndex:200, backgroundColor:'rgba(0,0,0,0.5)', display:'flex', alignItems:'center', justifyContent:'center' }}
+          onClick={() => setShowQRCode(false)}>
+          <div style={{ backgroundColor: theme.panel, borderRadius:'16px', padding:'28px', textAlign:'center', boxShadow: theme.shadow }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize:'18px', fontWeight:'bold', color: theme.text, marginBottom:'16px' }}>방 공유 QR 코드</div>
+            <img src={qrDataUrl} alt="QR Code" style={{ width:'200px', height:'200px', borderRadius:'8px' }}/>
+            <div style={{ fontSize:'12px', color: theme.textMuted, marginTop:'10px' }}>
+              {`${window.location.origin}${window.location.pathname}?room=${roomId}`}
+            </div>
+            <button onClick={() => setShowQRCode(false)} style={{ marginTop:'16px', padding:'8px 24px', borderRadius:'8px', border:'none', background:'#3b82f6', color:'white', cursor:'pointer', fontWeight:'bold' }}>닫기</button>
+          </div>
+        </div>
+      )}
+
+      {/* 도형 라이브러리 */}
+      {showShapeLibrary && (
+        <ShapeLibrary
+          theme={theme}
+          currentShapeName={currentShapeName}
+          onSelect={(name) => { setCurrentShapeName(name); setShowShapeLibrary(false); setTool('shape'); }}
+          onClose={() => setShowShapeLibrary(false)}
+        />
+      )}
+
+      {/* 발표 모드 */}
+      {isPresentingMode && (
+        <PresentationMode
+          frames={elements.filter(el => el.tool === 'frame')}
+          allElements={elements}
+          stageRef={stageRef}
+          socket={socket}
+          roomId={roomId}
+          nickname={nickname}
+          theme={theme}
+          onNavigate={handleNavigateToFrame}
+          onClose={() => setIsPresentingMode(false)}
+        />
+      )}
     </div>
   );
 }

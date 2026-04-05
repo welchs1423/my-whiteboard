@@ -31,6 +31,9 @@ interface UseSocketEventsParams {
   setHostId?: React.Dispatch<React.SetStateAction<string | null>>;
   setPermissions?: React.Dispatch<React.SetStateAction<Record<string, 'edit' | 'view'>>>;
   setTimelineEvents?: React.Dispatch<React.SetStateAction<TimelineEvent[]>>;
+  // 신규: 레이저/발표
+  setLasers?: React.Dispatch<React.SetStateAction<Record<string, { x: number; y: number; ts: number; nickname: string }>>>;
+  onPresentingFrame?: (frameId: string, presenter: string) => void;
 }
 
 export function useSocketEvents({
@@ -42,6 +45,7 @@ export function useSocketEvents({
   setEmojiReactions, showToast,
   followingUserRef, historyRef, historyStepRef,
   setHostId, setPermissions, setTimelineEvents,
+  setLasers, onPresentingFrame,
 }: UseSocketEventsParams) {
   useEffect(() => {
     socket.on('draw_line', (data: DrawElement[]) => setElements(data));
@@ -99,10 +103,25 @@ export function useSocketEvents({
     if (setPermissions) socket.on('room_permissions', (perms: Record<string, 'edit' | 'view'>) => setPermissions(perms));
     if (setTimelineEvents) socket.on('timeline_data', (events: TimelineEvent[]) => setTimelineEvents(events));
 
+    if (setLasers) {
+      socket.on('laser_move', (data: { id: string; x: number; y: number; nickname: string }) => {
+        setLasers(prev => ({ ...prev, [data.id]: { x: data.x, y: data.y, ts: Date.now(), nickname: data.nickname } }));
+      });
+      socket.on('laser_stop', (data: { id: string }) => {
+        setLasers(prev => { const n = { ...prev }; delete n[data.id]; return n; });
+      });
+    }
+    if (onPresentingFrame) {
+      socket.on('presenting_frame', (data: { frameId: string; presenter: string }) => {
+        onPresentingFrame(data.frameId, data.presenter);
+      });
+    }
+
     return () => {
       ['draw_line', 'update_element', 'clear_all', 'user_list', 'receive_message', 'cursor_move', 'cursor_leave',
         'typing', 'stop_typing', 'user_joined', 'user_left', 'viewport_update', 'emoji_reaction',
-        'room_host', 'room_permissions', 'timeline_data']
+        'room_host', 'room_permissions', 'timeline_data',
+        'laser_move', 'laser_stop', 'presenting_frame']
         .forEach((ev) => socket.off(ev));
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps

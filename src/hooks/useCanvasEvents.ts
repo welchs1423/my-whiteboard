@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import type { RefObject, MutableRefObject, Dispatch, SetStateAction } from 'react';
 import Konva from 'konva';
 import type { Socket } from 'socket.io-client';
-import type { DrawElement, ToolType, DashStyle, LineCapStyle, Bounds } from '../utils/elementHelpers';
+import type { DrawElement, ToolType, DashStyle, Bounds, LineCapStyle } from '../utils/elementHelpers';
 import {
   generateId, getElementAtPoint, getElementsInRect, moveElementBy,
   smoothPoints, simplifyPoints, detectSmartShape,
@@ -10,7 +10,7 @@ import {
 
 // ── 로컬 인터페이스 ──
 interface EmojiReaction { id: string; x: number; y: number; emoji: string; nickname: string; }
-interface TextInputState { x: number; y: number; value: string; targetIdx?: number; }
+interface TextInputState { x: number; y: number; value: string; targetIdx?: number; width?: number; height?: number; }
 
 export interface CanvasEventsParams {
   // Refs
@@ -29,6 +29,11 @@ export interface CanvasEventsParams {
   isSmoothingRef: RefObject<boolean>;
   isSmartShapeRef: RefObject<boolean>;
   lastCursorEmit: MutableRefObject<number>;
+  lastPenTime: MutableRefObject<number>;       // 속도 감응 pen
+  bezierPhase: MutableRefObject<number>;       // 0=idle 1=has-start 2=has-end
+  bezierAnchor: MutableRefObject<number[]>;    // [sx,sy] or [sx,sy,ex,ey]
+  connectorPhase: MutableRefObject<number>;    // 0=idle 1=has-first
+  connectorFirst: MutableRefObject<{ id: string; x: number; y: number } | null>;
   // State values
   contextMenu: { x: number; y: number } | null;
   elements: DrawElement[];
@@ -45,6 +50,9 @@ export interface CanvasEventsParams {
   currentLineCap: LineCapStyle;
   currentOpacity: number;
   stickyBg: string;
+  currentShapeName: string;   // 도형 라이브러리 기본 선택
+  gradientColors: [string, string] | null;
+  gradientAngle: number;
   // Setters
   setContextMenu: Dispatch<SetStateAction<{ x: number; y: number } | null>>;
   setEmojiReactions: Dispatch<SetStateAction<EmojiReaction[]>>;
@@ -93,6 +101,95 @@ export function useCanvasEvents(p: CanvasEventsParams) {
 
     if (p.isViewOnly) return;
 
+    // ── 베지어 곡선 (3클릭: 시작→끝→커트롤포인트) ──
+    if (p.tool === 'bezier') {
+      if (p.bezierPhase.current === 0) {
+        // 1클릭: 시작
+        p.bezierAnchor.current = [p.snap(pos.x), p.snap(pos.y)];
+        p.bezierPhase.current = 1;
+        const newEl: DrawElement = {
+          id: generateId(), tool: 'bezier',
+          points: [p.snap(pos.x), p.snap(pos.y), p.snap(pos.x), p.snap(pos.y), p.snap(pos.x), p.snap(pos.y)],
+          color: p.currentColor, strokeWidth: p.strokeWidth,
+          filled: p.isFilled, dash: p.currentDash, opacity: p.currentOpacity, lineCap: p.currentLineCap,
+        };
+        p.isDrawing.current = true;
+        p.setElements(prev => { const upd = [...prev, newEl]; p.socket.emit('update_element', newEl); return upd; });
+      } else if (p.bezierPhase.current === 1) {
+        // 2클릭: 끝점 고정
+        p.bezierAnchor.current = [...p.bezierAnchor.current, p.snap(pos.x), p.snap(pos.y)];
+        p.bezierPhase.current = 2;
+      } else if (p.bezierPhase.current === 2) {
+        // 3클릭: 커트론 포인트 고정 → 완성
+        p.setElements(latest => {
+          const upd = [...latest];
+          const last = { ...upd[upd.length - 1] };
+          const [sx, sy, ex, ey] = p.bezierAnchor.current;
+          last.points = [sx, sy, p.snap(pos.x), p.snap(pos.y), ex, ey];
+          upd[upd.length - 1] = last;
+          p.saveHistoryWith(upd);
+          p.socket.emit('update_element', last);
+          return upd;
+        });
+        p.bezierPhase.current = 0;
+        p.bezierAnchor.current = [];
+        p.isDrawing.current = false;
+      }
+      return;
+    }
+
+    // ── 커넥터 (2클릭: 첫 요소 → 두 번째 요소) ──
+    if (p.tool === 'connector') {
+      const clickedIdx = getElementAtPoint(p.elements, pos.x, pos.y);
+      if (p.connectorPhase.current === 0) {
+        if (clickedIdx !== null) {
+          p.connectorFirst.current = { id: p.elements[clickedIdx].id!, x: pos.x, y: pos.y };
+          p.connectorPhase.current = 1;
+          p.showToast('두 번째 요소를 클릭하세요', 'info');
+        }
+      } else {
+        const first = p.connectorFirst.current!;
+        const newEl: DrawElement = {
+          id: generateId(), tool: 'connector',
+          points: [first.x, first.y, pos.x, pos.y],
+          color: p.currentColor, strokeWidth: p.strokeWidth,
+          dash: p.currentDash, opacity: p.currentOpacity,
+          connectorFrom: first.id,
+          connectorTo: clickedIdx !== null ? p.elements[clickedIdx].id : undefined,
+        };
+        p.setElements(prev => {
+          const upd = [...prev, newEl];
+          p.saveHistoryWith(upd);
+          p.socket.emit('update_element', newEl);
+          return upd;
+        });
+        p.connectorPhase.current = 0;
+        p.connectorFirst.current = null;
+      }
+      return;
+    }
+
+    // ── 핀 (댓글) ──
+    if (p.tool === 'pin') {
+      const newEl: DrawElement = {
+        id: generateId(), tool: 'pin',
+        points: [p.snap(pos.x), p.snap(pos.y)],
+        color: p.currentColor, strokeWidth: 2,
+        opacity: p.currentOpacity,
+        pinText: '',
+      };
+      p.setElements(prev => {
+        const upd = [...prev, newEl];
+        p.saveHistoryWith(upd);
+        p.socket.emit('update_element', newEl);
+        return upd;
+      });
+      // 핀 텍스트 입력 모드
+      p.setTextInput({ x: p.snap(pos.x) + 18, y: p.snap(pos.y) - 30, value: '', targetIdx: p.elementsRef.current!.length });
+      return;
+    }
+
+    // ── 텍스트 ──
     if (p.tool === 'text') {
       p.commitText();
       p.setTextInput({ x: p.snap(pos.x), y: p.snap(pos.y), value: '' });
@@ -145,17 +242,21 @@ export function useCanvasEvents(p: CanvasEventsParams) {
         : [p.snap(pos.x), p.snap(pos.y), p.snap(pos.x), p.snap(pos.y)],
       color: p.currentColor, strokeWidth: p.strokeWidth,
       filled: p.isFilled, dash: p.currentDash, opacity: p.currentOpacity,
-      ...(['pen','eraser','straight','arrow'].includes(p.tool) ? { lineCap: p.currentLineCap } : {}),
+      ...(['pen','eraser','straight','arrow','bezier'].includes(p.tool) ? { lineCap: p.currentLineCap } : {}),
       ...(p.tool === 'sticky' ? { stickyBg: p.stickyBg } : {}),
       ...(p.tool === 'frame' ? { frameTitle: 'Frame' } : {}),
+      ...(p.tool === 'shape' ? { shapeName: p.currentShapeName } : {}),
+      ...(p.isFilled && p.gradientColors ? { gradientColors: p.gradientColors, gradientAngle: p.gradientAngle } : {}),
+      ...(p.tool === 'pen' ? { widths: [p.strokeWidth] } : {}),
     };
+    p.lastPenTime.current = Date.now();
     p.setElements(prev => {
       const upd = [...prev, newEl];
       p.socket.emit('update_element', newEl);
       return upd;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.contextMenu, p.elements, p.selectedIndices, p.tool, p.isEmojiMode, p.selectedEmoji, p.nickname, p.isViewOnly, p.currentColor, p.strokeWidth, p.isFilled, p.currentDash, p.currentLineCap, p.currentOpacity, p.stickyBg, p.getCanvasPos, p.snap, p.commitText]);
+  }, [p.contextMenu, p.elements, p.selectedIndices, p.tool, p.isEmojiMode, p.selectedEmoji, p.nickname, p.isViewOnly, p.currentColor, p.strokeWidth, p.isFilled, p.currentDash, p.currentLineCap, p.currentOpacity, p.stickyBg, p.currentShapeName, p.gradientColors, p.gradientAngle, p.getCanvasPos, p.snap, p.commitText]);
 
   const handleMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     if (p.isPanning.current && p.panStart.current) {
@@ -212,7 +313,21 @@ export function useCanvasEvents(p: CanvasEventsParams) {
       const upd = [...prev];
       const last = { ...upd[upd.length - 1] };
       if (last.tool === 'pen' || last.tool === 'eraser') {
+        const now = Date.now();
+        const dt = Math.max(now - p.lastPenTime.current, 1);
+        p.lastPenTime.current = now;
+        const px = last.points[last.points.length - 2];
+        const py = last.points[last.points.length - 1];
+        const dist = Math.hypot(p.snap(point.x) - px, p.snap(point.y) - py);
+        const speed = dist / dt; // px/ms
+        // speed: fast (>2) = thin, slow (<0.1) = thick
+        const minW = p.strokeWidth * 0.3;
+        const maxW = p.strokeWidth * 1.6;
+        const w = Math.min(maxW, Math.max(minW, maxW - (maxW - minW) * Math.min(speed / 2, 1)));
         last.points = [...last.points, p.snap(point.x), p.snap(point.y)];
+        if (last.tool === 'pen') {
+          last.widths = [...(last.widths || [p.strokeWidth]), w];
+        }
       } else {
         last.points = [last.points[0], last.points[1], p.snap(point.x), p.snap(point.y)];
       }
@@ -252,6 +367,23 @@ export function useCanvasEvents(p: CanvasEventsParams) {
           const nx = Math.min(last.points[0], last.points[2]) + 8;
           const ny = Math.min(last.points[1], last.points[3]) + 8;
           p.setTextInput({ x: nx, y: ny, value: '', targetIdx: latest.length - 1 });
+        }
+        return latest;
+      });
+      return;
+    }
+
+    // 텍스트박스 mouseup: 텍스트 입력 모드 진입
+    if (p.toolRef.current === 'textbox') {
+      p.setElements(latest => {
+        p.saveHistoryWith(latest);
+        const last = latest[latest.length - 1];
+        if (last?.tool === 'textbox' && last.points.length >= 4) {
+          const nx = Math.min(last.points[0], last.points[2]) + 6;
+          const ny = Math.min(last.points[1], last.points[3]) + 6;
+          const w = Math.abs(last.points[2] - last.points[0]) - 12;
+          const h = Math.abs(last.points[3] - last.points[1]) - 12;
+          p.setTextInput({ x: nx, y: ny, value: '', targetIdx: latest.length - 1, width: w, height: h });
         }
         return latest;
       });
@@ -307,6 +439,14 @@ export function useCanvasEvents(p: CanvasEventsParams) {
       const nx = Math.min(el.points[0], el.points[2]) + 8;
       const ny = Math.min(el.points[1], el.points[3]) + 8;
       p.setTextInput({ x: nx, y: ny, value: el.text || '', targetIdx: idx });
+    } else if (el.tool === 'textbox') {
+      const nx = Math.min(el.points[0], el.points[2]) + 6;
+      const ny = Math.min(el.points[1], el.points[3]) + 6;
+      const w = Math.abs(el.points[2] - el.points[0]) - 12;
+      const h = Math.abs(el.points[3] - el.points[1]) - 12;
+      p.setTextInput({ x: nx, y: ny, value: el.text || '', targetIdx: idx, width: w, height: h });
+    } else if (el.tool === 'pin') {
+      p.setTextInput({ x: el.points[0] + 18, y: el.points[1] - 30, value: el.pinText || el.text || '', targetIdx: idx });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.tool, p.elements, p.getCanvasPos]);

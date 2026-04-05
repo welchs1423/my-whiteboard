@@ -190,6 +190,21 @@ io.on('connection', (socket) => {
     socket.to(room).emit('voice_mute_update', { id: socket.id, muted });
   });
 
+  // 레이저 포인터
+  socket.on('laser_move', ({ x, y }) => {
+    const user = users[socket.id];
+    if (user) socket.to(user.room).emit('laser_move', { id: socket.id, x, y, nickname: user.nickname });
+  });
+  socket.on('laser_stop', () => {
+    const user = users[socket.id];
+    if (user) socket.to(user.room).emit('laser_stop', { id: socket.id });
+  });
+  // 발표 모드 프레임 동기화
+  socket.on('presenting_frame', ({ frameId }) => {
+    const user = users[socket.id];
+    if (user) socket.to(user.room).emit('presenting_frame', { frameId, presenter: user.nickname });
+  });
+
   socket.on('cursor_move', (pos) => { const user = users[socket.id]; if (user) socket.to(user.room).emit('cursor_move', { id: socket.id, x: pos.x, y: pos.y, nickname: user.nickname }); });
   socket.on('typing', (nickname) => { const user = users[socket.id]; if (user) socket.to(user.room).emit('typing', nickname); });
   socket.on('stop_typing', (nickname) => { const user = users[socket.id]; if (user) socket.to(user.room).emit('stop_typing', nickname); });

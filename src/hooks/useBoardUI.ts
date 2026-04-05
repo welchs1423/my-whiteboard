@@ -24,6 +24,14 @@ export function useBoardUI() {
   const [currentLineCap, setCurrentLineCap] = useState<LineCapStyle>('round');
   const [currentOpacity, setCurrentOpacity] = useState(1.0);
   const [stickyBg, setStickyBg] = useState('#fef08a');
+  const [currentShapeName, setCurrentShapeName] = useState('diamond');
+  const [gradientColors, setGradientColors] = useState<[string, string] | null>(null);
+  const [gradientAngle, setGradientAngle] = useState(0);
+  // ── 리치 텍스트 ──
+  const [fontStyle, setFontStyle] = useState<string>('normal');
+  const [textDecoration, setTextDecoration] = useState<string>('');
+  const [fontFamily, setFontFamily] = useState<string>('sans-serif');
+  const [textAlign, setTextAlign] = useState<string>('left');
 
   // ── 펜 옵션 ──
   const [isSmoothing, setIsSmoothing] = useState(false);
@@ -43,6 +51,12 @@ export function useBoardUI() {
   const [showHelp, setShowHelp] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const [showShapeLibrary, setShowShapeLibrary] = useState(false);
+  const [isLaserMode, setIsLaserMode] = useState(false);
+  const [bgImageUrl, setBgImageUrl] = useState<string | null>(null);
+  const [isPresentingMode, setIsPresentingMode] = useState(false);
+  const [presentingFrameIdx, setPresentingFrameIdx] = useState(0);
+  const [showQRCode, setShowQRCode] = useState(false);
   const showHelpRef = useRef(false);
   const isSnapEnabledRef = useRef(false);
 
@@ -102,6 +116,13 @@ export function useBoardUI() {
     currentLineCap, setCurrentLineCap,
     currentOpacity, setCurrentOpacity,
     stickyBg, setStickyBg,
+    currentShapeName, setCurrentShapeName,
+    gradientColors, setGradientColors,
+    gradientAngle, setGradientAngle,
+    fontStyle, setFontStyle,
+    textDecoration, setTextDecoration,
+    fontFamily, setFontFamily,
+    textAlign, setTextAlign,
     // pen options
     isSmoothing, setIsSmoothing, isSmoothingRef,
     isSmartShape, setIsSmartShape, isSmartShapeRef,
@@ -116,6 +137,12 @@ export function useBoardUI() {
     showHelp, setShowHelp, showHelpRef,
     isDragOver, setIsDragOver,
     isDarkMode, setIsDarkMode,
+    showShapeLibrary, setShowShapeLibrary,
+    isLaserMode, setIsLaserMode,
+    bgImageUrl, setBgImageUrl,
+    isPresentingMode, setIsPresentingMode,
+    presentingFrameIdx, setPresentingFrameIdx,
+    showQRCode, setShowQRCode,
     // toasts
     toasts, setToasts, showToast,
     // theme
