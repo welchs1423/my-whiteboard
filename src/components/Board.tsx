@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Stage, Layer, Rect } from 'react-konva';
 import Konva from 'konva';
 import {
@@ -124,6 +124,7 @@ export default function Board() {
   const clipboard = useRef<DrawElement | null>(null);
   const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
   const elementsRef = useRef<DrawElement[]>([]);
+  const toolRef = useRef<ToolType>('pen');
   
   // ── 히스토리 훅 ──
   const { saveHistoryWith, handleUndo, handleRedo, historyRef, historyStepRef } = useHistory(
@@ -140,7 +141,7 @@ export default function Board() {
   const lastViewportEmit = useRef(0);
 
   // ── 테마 ──
-  const theme = {
+  const theme = useMemo(() => ({
     bg: isDarkMode ? '#111827' : '#f9fafb',
     panel: isDarkMode ? '#1f2937' : 'white',
     border: isDarkMode ? '#374151' : '#e5e7eb',
@@ -154,14 +155,14 @@ export default function Board() {
     chatBubbleSelf: '#3b82f6',
     chatBubbleOther: isDarkMode ? '#374151' : '#f3f4f6',
     chatTextOther: isDarkMode ? '#f3f4f6' : '#374151',
-  };
+  }), [isDarkMode]);
 
   // ── 토스트 ──
-  const showToast = (message: string, type: Toast['type'] = 'info') => {
+  const showToast = useCallback((message: string, type: Toast['type'] = 'info') => {
     const id = generateId();
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
-  };
+  }, []);
 
   // ── 색상 선택 ──
   const selectColor = (color: string) => {
@@ -184,16 +185,17 @@ export default function Board() {
   followingUserRef.current = followingUserId;
   isSmoothingRef.current = isSmoothing;
   isSmartShapeRef.current = isSmartShape;
+  toolRef.current = tool;
 
   // ── 좌표 변환 ──
-  const getCanvasPos = (stage: Konva.Stage): { x: number; y: number } | null => {
+  const getCanvasPos = useCallback((stage: Konva.Stage): { x: number; y: number } | null => {
     const p = stage.getPointerPosition();
     if (!p) return null;
     return {
       x: (p.x - stagePosRef.current.x) / stageScaleRef.current,
       y: (p.y - stagePosRef.current.y) / stageScaleRef.current,
     };
-  };
+  }, []);
 
   const canvasToScreen = (cx: number, cy: number) => ({
     x: cx * stageScale + stagePos.x,
@@ -338,23 +340,23 @@ export default function Board() {
   };
 
   // ── 내보내기 / 가져오기 ──
-  const handleDownloadPNG = () => {
+  const handleDownloadPNG = useCallback(() => {
     if (!stageRef.current) return;
     const uri = stageRef.current.toDataURL({ pixelRatio: 2 });
     const a = document.createElement('a');
     a.download = `whiteboard-${Date.now()}.png`;
     a.href = uri;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  };
+  }, []);
 
-  const handleExportJSON = () => {
-    const blob = new Blob([JSON.stringify(elements, null, 2)], { type: 'application/json' });
+  const handleExportJSON = useCallback(() => {
+    const blob = new Blob([JSON.stringify(elementsRef.current, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.download = `whiteboard-${Date.now()}.json`; a.href = url;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  };
+  }, []);
 
   const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -439,7 +441,7 @@ export default function Board() {
     setStagePos({ x: (w - cw * newScale) / 2 - minX * newScale, y: (h - ch * newScale) / 2 - minY * newScale });
   };
 
-  const snap = (v: number) => isSnapEnabledRef.current ? Math.round(v / 28) * 28 : v;
+  const snap = useCallback((v: number) => isSnapEnabledRef.current ? Math.round(v / 28) * 28 : v, []);
 
   // ── Effects ──
   useEffect(() => {
@@ -589,11 +591,11 @@ export default function Board() {
     setInputText('');
   };
 
-  const handleClearAll = () => {
+  const handleClearAll = useCallback(() => {
     setElements([]); setSelectedIndices(new Set());
     historyRef.current = [[]]; historyStepRef.current = 0;
     socket.emit('clear_all');
-  };
+  }, [historyRef, historyStepRef]);
 
   const commitText = () => {
     if (!textInput) return;
@@ -714,7 +716,7 @@ export default function Board() {
     });
   };
 
-  const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
+  const handleMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     if (isPanning.current && panStart.current) {
       const dx = e.evt.clientX - panStart.current.mx;
       const dy = e.evt.clientY - panStart.current.my;
@@ -733,7 +735,7 @@ export default function Board() {
       lastCursorEmit.current = now;
     }
 
-    if (tool === 'select') {
+    if (toolRef.current === 'select') {
       if (isDraggingSelected.current && dragStartPos.current && dragOriginals.current.length) {
         const dx = snap(point.x) - snap(dragStartPos.current.x);
         const dy = snap(point.y) - snap(dragStartPos.current.y);
@@ -756,7 +758,7 @@ export default function Board() {
           height: point.y - boxSelectStart.current.y,
         };
         setBoxSelectRect(r);
-        const inRect = getElementsInRect(elements, r.x, r.y, r.width, r.height);
+        const inRect = getElementsInRect(elementsRef.current, r.x, r.y, r.width, r.height);
         setSelectedIndices(new Set(inRect));
       }
       return;
@@ -777,12 +779,12 @@ export default function Board() {
       socket.emit('update_element', last); 
       return upd;
     });
-  };
+  }, [getCanvasPos, snap]);
 
-  const handleMouseUp = () => {
+  const handleMouseUp = useCallback(() => {
     if (isPanning.current) { isPanning.current = false; panStart.current = null; return; }
 
-    if (tool === 'select') {
+    if (toolRef.current === 'select') {
       if (isDraggingSelected.current) {
         isDraggingSelected.current = false; dragStartPos.current = null; dragOriginals.current = [];
         setElements((latest) => { saveHistoryWith(latest); return latest; });
@@ -797,7 +799,7 @@ export default function Board() {
     if (!isDrawing.current) return;
     isDrawing.current = false;
 
-    if (tool === 'sticky') {
+    if (toolRef.current === 'sticky') {
       setElements((latest) => {
         saveHistoryWith(latest);
         const last = latest[latest.length - 1];
@@ -841,7 +843,7 @@ export default function Board() {
       saveHistoryWith(latest);
       return latest;
     });
-  };
+  }, [saveHistoryWith, showToast]);
 
   const handleDblClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (tool !== 'select') return;
@@ -881,45 +883,49 @@ export default function Board() {
   };
 
   // ── 선택 바운딩 박스 ──
-  const selectionRects = [...selectedIndices].map((idx) => {
-    if (idx >= elements.length) return null;
-    const b = getElementBounds(elements[idx]);
-    if (!b) return null;
-    return (
-      <Rect key={`sel-${idx}`}
-        x={b.x - 4} y={b.y - 4} width={b.width + 8} height={b.height + 8}
-        stroke="#3b82f6" strokeWidth={1.5 / stageScale}
-        dash={[6 / stageScale, 3 / stageScale]}
-        fill="rgba(59,130,246,0.05)" listening={false} />
-    );
-  });
+  const { selectionRects, groupRects } = useMemo(() => {
+    const selectionRects = [...selectedIndices].map((idx) => {
+      if (idx >= elements.length) return null;
+      const b = getElementBounds(elements[idx]);
+      if (!b) return null;
+      return (
+        <Rect key={`sel-${idx}`}
+          x={b.x - 4} y={b.y - 4} width={b.width + 8} height={b.height + 8}
+          stroke="#3b82f6" strokeWidth={1.5 / stageScale}
+          dash={[6 / stageScale, 3 / stageScale]}
+          fill="rgba(59,130,246,0.05)" listening={false} />
+      );
+    });
 
-  const groupBoundsMap = new Map<string, Bounds>();
-  [...selectedIndices].forEach((idx) => {
-    if (idx >= elements.length) return;
-    const el = elements[idx];
-    if (!el.groupId) return;
-    const b = getElementBounds(el);
-    if (!b) return;
-    const ex = groupBoundsMap.get(el.groupId);
-    if (ex) {
-      const nx = Math.min(ex.x, b.x), ny = Math.min(ex.y, b.y);
-      groupBoundsMap.set(el.groupId, {
-        x: nx, y: ny,
-        width: Math.max(ex.x + ex.width, b.x + b.width) - nx,
-        height: Math.max(ex.y + ex.height, b.y + b.height) - ny,
-      });
-    } else {
-      groupBoundsMap.set(el.groupId, { ...b });
-    }
-  });
-  const groupRects = [...groupBoundsMap.entries()].map(([gid, b]) => (
-    <Rect key={`group-${gid}`}
-      x={b.x - 10} y={b.y - 10} width={b.width + 20} height={b.height + 20}
-      stroke="#f59e0b" strokeWidth={2 / stageScale}
-      dash={[8 / stageScale, 4 / stageScale]}
-      fill="rgba(245,158,11,0.04)" listening={false} cornerRadius={4} />
-  ));
+    const groupBoundsMap = new Map<string, Bounds>();
+    [...selectedIndices].forEach((idx) => {
+      if (idx >= elements.length) return;
+      const el = elements[idx];
+      if (!el.groupId) return;
+      const b = getElementBounds(el);
+      if (!b) return;
+      const ex = groupBoundsMap.get(el.groupId);
+      if (ex) {
+        const nx = Math.min(ex.x, b.x), ny = Math.min(ex.y, b.y);
+        groupBoundsMap.set(el.groupId, {
+          x: nx, y: ny,
+          width: Math.max(ex.x + ex.width, b.x + b.width) - nx,
+          height: Math.max(ex.y + ex.height, b.y + b.height) - ny,
+        });
+      } else {
+        groupBoundsMap.set(el.groupId, { ...b });
+      }
+    });
+    const groupRects = [...groupBoundsMap.entries()].map(([gid, b]) => (
+      <Rect key={`group-${gid}`}
+        x={b.x - 10} y={b.y - 10} width={b.width + 20} height={b.height + 20}
+        stroke="#f59e0b" strokeWidth={2 / stageScale}
+        dash={[8 / stageScale, 4 / stageScale]}
+        fill="rgba(245,158,11,0.04)" listening={false} cornerRadius={4} />
+    ));
+
+    return { selectionRects, groupRects };
+  }, [selectedIndices, elements, stageScale]);
 
   const textAreaScreen = textInput ? canvasToScreen(textInput.x, textInput.y) : null;
 
@@ -939,28 +945,32 @@ export default function Board() {
   });
 
   // ── 미니맵 (Minimap) 계산 로직 ──
-  const mapWidth = 200;
-  const mapHeight = 150;
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  elements.forEach(el => {
-    const b = getElementBounds(el);
-    if (b) {
-      minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
-      maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
-    }
-  });
+  const minimapData = useMemo(() => {
+    const mapWidth = 200, mapHeight = 150;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    elements.forEach(el => {
+      const b = getElementBounds(el);
+      if (b) {
+        minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+        maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
+      }
+    });
+    if (minX === Infinity) { minX = 0; minY = 0; maxX = window.innerWidth; maxY = window.innerHeight; }
+    const mapPad = 500;
+    minX -= mapPad; minY -= mapPad; maxX += mapPad; maxY += mapPad;
+    const contentW = maxX - minX, contentH = maxY - minY;
+    const mapScale = Math.min(mapWidth / contentW, mapHeight / contentH);
+    const mapOffsetX = (mapWidth - contentW * mapScale) / 2;
+    const mapOffsetY = (mapHeight - contentH * mapScale) / 2;
+    const dots = elements.map((el, i) => {
+      const b = getElementBounds(el);
+      if (!b) return null;
+      return <rect key={i} x={mapOffsetX + (b.x - minX) * mapScale} y={mapOffsetY + (b.y - minY) * mapScale} width={b.width * mapScale} height={b.height * mapScale} fill={el.color === 'transparent' ? '#ccc' : el.color} opacity={0.6} rx={2} />;
+    });
+    return { mapWidth, mapHeight, minX, minY, mapScale, mapOffsetX, mapOffsetY, dots };
+  }, [elements]);
 
-  if (minX === Infinity) { minX = 0; minY = 0; maxX = window.innerWidth; maxY = window.innerHeight; }
-
-  const mapPad = 500;
-  minX -= mapPad; minY -= mapPad; maxX += mapPad; maxY += mapPad;
-
-  const contentW = maxX - minX;
-  const contentH = maxY - minY;
-  const mapScale = Math.min(mapWidth / contentW, mapHeight / contentH);
-
-  const mapOffsetX = (mapWidth - contentW * mapScale) / 2;
-  const mapOffsetY = (mapHeight - contentH * mapScale) / 2;
+  const { mapWidth, mapHeight, minX, minY, mapScale, mapOffsetX, mapOffsetY, dots: minimapDots } = minimapData;
 
   const viewRectX = mapOffsetX + (-stagePos.x / stageScale - minX) * mapScale;
   const viewRectY = mapOffsetY + (-stagePos.y / stageScale - minY) * mapScale;
@@ -1315,11 +1325,7 @@ export default function Board() {
         title="드래그하여 이동"
       >
         <svg width="100%" height="100%">
-          {elements.map((el, i) => {
-            const b = getElementBounds(el);
-            if (!b) return null;
-            return <rect key={i} x={mapOffsetX + (b.x - minX) * mapScale} y={mapOffsetY + (b.y - minY) * mapScale} width={b.width * mapScale} height={b.height * mapScale} fill={el.color === 'transparent' ? '#ccc' : el.color} opacity={0.6} rx={2} />
-          })}
+          {minimapDots}
           <rect x={viewRectX} y={viewRectY} width={viewRectW} height={viewRectH} stroke="#ef4444" strokeWidth="2" fill="rgba(239, 68, 68, 0.15)" />
         </svg>
       </div>
