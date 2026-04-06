@@ -1,4 +1,4 @@
-// ── 타입 정의 ────────────────────────────────────────────────────────────────
+// ── 타입 정의 ──
 
 export type ToolType =
   | 'pen' | 'eraser' | 'rect' | 'circle' | 'text'
@@ -85,7 +85,7 @@ export interface Bounds {
   height: number;
 }
 
-// ── 유틸리티 ─────────────────────────────────────────────────────────────────
+// ── 유틸리티 ──
 
 export const generateId = (): string =>
   Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -271,7 +271,7 @@ export function resizeElementWithHandle(
   return origEl;
 }
 
-// ── 선 매끄럽게 처리 ──────────────────────────────────────────────────────────
+// ── 선 매끄럽게 처리 ──
 
 /** Douglas-Peucker 점 단순화 (내부 재귀) */
 function dpRecurse(pts: [number, number][], epsilon: number): [number, number][] {
@@ -322,7 +322,7 @@ export function smoothPoints(points: number[], iterations = 3): number[] {
   return pts;
 }
 
-// ── 도형 자동 인식 ────────────────────────────────────────────────────────────
+// ── 도형 자동 인식 ──
 
 /** 펜 획에서 원 또는 삼각형을 자동 인식하여 도형 엘리먼트로 변환 */
 export function detectSmartShape(el: DrawElement): DrawElement | null {

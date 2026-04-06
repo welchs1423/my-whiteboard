@@ -6,7 +6,7 @@ import { Line, Rect, Ellipse, Text, Arrow, Image as KonvaImage, Group, Path } fr
 import type { DrawElement } from './elementHelpers';
 import { getDashArray, getElementBounds } from './elementHelpers';
 
-// ── 회전 래퍼 헬퍼 ──────────────────────────────────────────────────
+// ── 회전 래퍼 헬퍼 ──────────
 function withRotation(node: ReactElement, el: DrawElement, i: number): ReactNode {
   if (!el.rotation) return cloneElement(node, { key: i });
   const b = getElementBounds(el);
@@ -20,7 +20,7 @@ function withRotation(node: ReactElement, el: DrawElement, i: number): ReactNode
   );
 }
 
-// ── 도형 라이브러리 패스 (0~1 정규화 좌표) ──────────────────────────
+// ── 도형 라이브러리 패스 (0~1 정규화 좌표) ──
 export const SHAPE_PATHS: Record<string, string> = {
   diamond:       'M 0.5 0 L 1 0.5 L 0.5 1 L 0 0.5 Z',
   hexagon:       'M 1 0.5 L 0.75 0.933 L 0.25 0.933 L 0 0.5 L 0.25 0.067 L 0.75 0.067 Z',

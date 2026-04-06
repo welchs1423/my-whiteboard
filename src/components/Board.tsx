@@ -45,7 +45,7 @@ import HistoryDiffPanel from './HistoryDiffPanel';
 import ThemeSelector from './ThemeSelector';
 import AIDiagramModal from './AIDiagramModal';
 
-const socket = io('http://localhost:3001');
+const socket = io(import.meta.env.VITE_SERVER_URL ?? 'http://localhost:3001');
 
 // ── 인터페이스 ─────────────────────────────────────────────────────────────
 
@@ -156,19 +156,17 @@ export default function Board() {
   const [textInput, setTextInput] = useState<TextInputState | null>(null);
   const [, setImageLoadTick] = useState(0);
 
-  // ── 새 상태 ──
+  // ── 추가 UI 상태 ──
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const saveIndicatorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showSearch, setShowSearch] = useState(false);
   const [snapLines, setSnapLines] = useState<{ type: 'x' | 'y'; pos: number }[]>([]);
   const [tableCellEdit, setTableCellEdit] = useState<{ idx: number; row: number; col: number; value: string } | null>(null);
 
-  // ── Feature 8: Zoom slider (uses stageScale from viewport hook) ──
-
-  // ── Feature 9: Template Gallery ──
+  // ── 템플릿 갤러리 ──
   const [showTemplateGallery, setShowTemplateGallery] = useState(false);
 
-  // ── Feature 10: Shortcut Settings ──
+  // ── 단축키 커스터마이징 ──
   const [showShortcutSettings, setShowShortcutSettings] = useState(false);
   const [customShortcuts, setCustomShortcuts] = useState<Record<string, string>>(() => {
     try {
@@ -177,10 +175,10 @@ export default function Board() {
     } catch { return {}; }
   });
 
-  // ── Feature 11: Bulk Color Change ──
+  // ── 일괄 색상 변경 ──
   const [bulkColor, setBulkColor] = useState('#000000');
 
-  // ── Feature 12: Timer Widget ──
+  // ── 타이머 위젯 ──
   const [showTimer, setShowTimer] = useState(false);
   const [timerState, setTimerState] = useState({
     mode: 'down' as 'up' | 'down',
@@ -191,50 +189,55 @@ export default function Board() {
   const timerDragStart = useRef<{ mx: number; my: number; sx: number; sy: number } | null>(null);
   const [timerPosState, setTimerPosState] = useState({ x: 20, y: 200 });
 
-  // ── Feature 5: Cursor DM ──
+  // ── 다이렉트 메시지 ──
   const [dmTarget, setDmTarget] = useState<{ userId: string; nickname: string } | null>(null);
   const [dmInput, setDmInput] = useState('');
   const [dmToastList, setDmToastList] = useState<{ id: string; from: string; text: string }[]>([]);
 
-  // ── Feature 6: Edit Indicators ──
+  // ── 실시간 편집 표시 ──
   const [editingIndicators, setEditingIndicators] = useState<Record<string, { nickname: string; color: string }>>({});
 
-  // ── Feature 1: Image Crop Mode ──
+  // ── 이미지 크롭 ──
   const [isCropMode, setIsCropMode] = useState(false);
   const cropHandleRef = useRef<string | null>(null);
   const cropOriginRef = useRef<{ startPos: { x: number; y: number }; origEl: DrawElement } | null>(null);
 
-  // ── Feature 7: History Diff ──
+  // ── 변경 이력 diff 패널 ──
   const [showHistoryDiff, setShowHistoryDiff] = useState(false);
 
-  // ── New Features State ──
-  // Feature 1: AI Diagram
+  // ── AI 다이어그램 ──
   const [showAIDiagram, setShowAIDiagram] = useState(false);
-  // Feature 6: URL Link
+
+  // ── URL 링크 모달 ──
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [linkModalIdx, setLinkModalIdx] = useState<number | null>(null);
   const [linkInput, setLinkInput] = useState('');
-  // Feature 7: iframe embed
+
+  // ── iframe 임베드 ──
   const [showIframeInput, setShowIframeInput] = useState(false);
   const [iframeInputValue, setIframeInputValue] = useState('');
   const [pendingIframePos, setPendingIframePos] = useState<{ x: number; y: number } | null>(null);
-  // Feature 8: Code Editor
+
+  // ── 코드 에디터 ──
   const [showCodeEditor, setShowCodeEditor] = useState(false);
   const [codeEditorIdx, setCodeEditorIdx] = useState<number | null>(null);
   const [codeEditorText, setCodeEditorText] = useState('');
   const [codeEditorLang, setCodeEditorLang] = useState('javascript');
-  // Feature 5: Voice Memo
+
+  // ── 음성 메모 ──
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
-  // Feature 4: Screen Share
+
+  // ── 화면 공유 ──
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [screenShareStream, setScreenShareStream] = useState<MediaStream | null>(null);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
-  // Feature 2: OCR
+
+  // ── OCR 처리 상태 ──
   const [isOCRProcessing, setIsOCRProcessing] = useState(false);
-  // Feature 10: Anonymous - handled in handleJoin via socket
-  // Feature 12: Theme Selector
+
+  // ── 보드 테마 선택 ──
   const [showThemeSelector, setShowThemeSelector] = useState(false);
 
   // ── Formula cache ──
@@ -404,7 +407,7 @@ export default function Board() {
     setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
   };
 
-  // ── 자동 레이아웃 (Feature 11) ──
+  // ── 자동 레이아웃 ──
   const applyDistributeH = () => {
     const idxs = [...selectedIndicesRef.current];
     if (idxs.length < 3) return;
@@ -514,7 +517,7 @@ export default function Board() {
     };
   };
 
-  // 📌 API 기반 이미지 업로드 (Multer 연동)
+  // Multer API를 통한 이미지 업로드
   const handleImageFile = async (file: File, dropPos?: { x: number; y: number }) => {
     if (!file.type.startsWith('image/')) return;
     const pos = dropPos ?? screenToCanvas(stageSize.width / 2, stageSize.height / 2);
@@ -524,7 +527,7 @@ export default function Board() {
 
     try {
       showToast('이미지 업로드 중...', 'info');
-      const res = await fetch('http://localhost:3001/upload', {
+      const res = await fetch(`${import.meta.env.VITE_SERVER_URL ?? 'http://localhost:3001'}/upload`, {
         method: 'POST',
         body: formData,
       });
@@ -533,7 +536,7 @@ export default function Board() {
         insertImage(data.url, pos.x, pos.y);
       }
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       showToast('이미지 업로드에 실패했습니다.', 'leave');
     }
   };
@@ -731,7 +734,7 @@ export default function Board() {
       const dataUrl = await QRCode.toDataURL(url, { width: 200, margin: 2 });
       setQrDataUrl(dataUrl);
       setShowQRCode(true);
-    } catch (e) { console.error(e); }
+    } catch (e) { if (import.meta.env.DEV) console.error(e); }
   }, [roomId, setShowQRCode]);
 
   // ── 배경 이미지 ──
@@ -973,7 +976,7 @@ export default function Board() {
     },
   });
 
-  // ── Feature 5: DM 수신 ──
+  // ── DM 알림 수신 ──
   useEffect(() => {
     const onDM = (data: { from: string; text: string }) => {
       const id = generateId();
@@ -984,7 +987,7 @@ export default function Board() {
     return () => { socket.off('receive_dm', onDM); };
   }, []);
 
-  // ── Feature 6: 편집 중 표시 ──
+  // ── 실시간 편집 표시 동기화 ──
   useEffect(() => {
     const onStart = (data: { elementId: string; nickname: string; color: string }) => {
       setEditingIndicators(prev => ({ ...prev, [data.elementId]: { nickname: data.nickname, color: data.color } }));
@@ -997,14 +1000,14 @@ export default function Board() {
     return () => { socket.off('element_editing', onStart); socket.off('element_edit_stop', onStop); };
   }, []);
 
-  // ── Feature 12: Timer sync ──
+  // ── 타이머 상태 서버 동기화 ──
   useEffect(() => {
     const onSync = (state: typeof timerState) => setTimerState(state);
     socket.on('timer_sync', onSync);
     return () => { socket.off('timer_sync', onSync); };
   }, []);
 
-  // ── Feature 12: Timer interval ──
+  // ── 타이머 인터벌 ──
   useEffect(() => {
     if (!timerState.isRunning) return;
     const id = setInterval(() => {
@@ -1050,7 +1053,7 @@ export default function Board() {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-  // Feature 8: Auto-open code editor when new code element is created
+  // 새로 그린 코드 블록에 에디터 자동 오픈
   useEffect(() => {
     if (tool !== 'code') return;
     const last = elements[elements.length - 1];
@@ -1064,7 +1067,6 @@ export default function Board() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [elements.length]);
 
-  // Feature 4: Update screen video src when stream changes
   useEffect(() => {
     if (screenVideoRef.current && screenShareStream) {
       screenVideoRef.current.srcObject = screenShareStream;
@@ -1094,7 +1096,7 @@ export default function Board() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isJoined]);
 
-  // ── Feature 4: Touch / Pinch-to-Zoom ──
+  // ── 터치 이벤트 (핀치 줌, 1핑거 패닝) ──
   const lastTouchDist = useRef(0);
   const lastTouchCenter = useRef<{ x: number; y: number } | null>(null);
   const touchPanStart = useRef<{ mx: number; my: number; sx: number; sy: number } | null>(null);
@@ -1181,7 +1183,7 @@ export default function Board() {
     socket.emit('clear_all');
   }, [historyRef, historyStepRef]);
 
-  // ── Feature 9: Sticky Vote ──
+  // ── 스티키 노트 투표 ──
   const handleVote = useCallback((idx: number) => {
     const el = elementsRef.current[idx];
     if (!el || el.tool !== 'sticky') return;
@@ -1195,7 +1197,7 @@ export default function Board() {
     socket.emit('update_element', updated);
   }, [elementsRef, setElements, saveHistoryWith]);
 
-  // ── Feature 6: URL Link ──
+  // ── URL 링크 첨부 ──
   const openLinkModal = useCallback((idx: number) => {
     setLinkModalIdx(idx);
     setLinkInput(elementsRef.current[idx]?.linkUrl ?? '');
@@ -1214,7 +1216,7 @@ export default function Board() {
     setLinkModalIdx(null);
   }, [linkModalIdx, linkInput, elementsRef, setElements, saveHistoryWith]);
 
-  // ── Feature 8: Code Editor ──
+  // ── 코드 블록 에디터 ──
   const openCodeEditor = useCallback((idx: number) => {
     const el = elementsRef.current[idx];
     if (!el) return;
@@ -1236,7 +1238,7 @@ export default function Board() {
     setCodeEditorIdx(null);
   }, [codeEditorIdx, codeEditorText, codeEditorLang, elementsRef, setElements, saveHistoryWith]);
 
-  // ── Feature 5: Voice Memo ──
+  // ── 음성 메모 녹음 ──
   const startRecording = useCallback(async (idx: number) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1277,7 +1279,7 @@ export default function Board() {
     audio.play().catch(() => showToast('오디오 재생 실패', 'leave'));
   }, [showToast]);
 
-  // ── Feature 4: Screen Share ──
+  // ── 화면 공유 ──
   const startScreenShare = useCallback(async () => {
     if (isScreenSharing) {
       screenShareStream?.getTracks().forEach(t => t.stop());
@@ -1305,7 +1307,7 @@ export default function Board() {
     }
   }, [isScreenSharing, screenShareStream, roomId, showToast]);
 
-  // ── Feature 2: OCR ──
+  // ── 손글씨 OCR ──
   const handleOCR = useCallback(async () => {
     const idx = [...selectedIndicesRef.current][0];
     if (idx === undefined) return;
@@ -1342,14 +1344,14 @@ export default function Board() {
         showToast('텍스트를 인식하지 못했습니다', 'info');
       }
     } catch (err) {
-      console.error(err);
+      if (import.meta.env.DEV) console.error(err);
       showToast('OCR 처리 실패. tesseract.js가 설치되어 있는지 확인하세요.', 'leave');
     } finally {
       setIsOCRProcessing(false);
     }
   }, [selectedIndicesRef, elementsRef, stageRef, stageScale, stagePos, currentColor, strokeWidth, currentOpacity, setElements, saveHistoryWith, showToast]);
 
-  // ── Feature 3: GIF Export ──
+  // ── 타임라인 프레임 내보내기 ──
   const handleGifExport = useCallback(async () => {
     if (timelineEvents.length === 0) { showToast('타임라인 이벤트가 없습니다', 'info'); return; }
     showToast('📸 프레임 캡처 중...', 'info');
@@ -1431,7 +1433,7 @@ export default function Board() {
     setTableCellEdit(null);
   };
 
-  // ── Feature 2: Mindmap creation handler ──
+  // ── 마인드맵 노드 생성 ──
   const handleMindmapClick = useCallback((x: number, y: number) => {
     // Check if clicking on existing mindmap node
     let clickedIdx = -1;
@@ -1476,7 +1478,7 @@ export default function Board() {
     }
   }, [elementsRef, setElements, saveHistoryWith]);
 
-  // ── Feature 3: Formula creation handler ──
+  // ── LaTeX 수식 생성 ──
   const handleFormulaCreate = useCallback(async (x: number, y: number) => {
     const latex = window.prompt('LaTeX 수식을 입력하세요:', '\\frac{a}{b} = \\sqrt{c^2}');
     if (!latex) return;
@@ -1522,12 +1524,12 @@ export default function Board() {
     socket,
   });
 
-  // Wrap mouseDown to handle mindmap/formula tools and crop mode and element_editing emit
+  // mouseDown 래퍼: 크롭/마인드맵/수식/iframe 등 추가 툴 처리
   const handleMouseDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     const stage = e.target.getStage();
     if (!stage) return;
 
-    // Crop handle logic (Feature 1)
+    // 크롭 핸들 상호작용
     if (isCropMode) {
       const name = e.target.name();
       if (name.startsWith('crop-')) {
@@ -1547,7 +1549,7 @@ export default function Board() {
       return;
     }
 
-    // Feature 6: emit element_editing when starting drag on selected element
+    // 드래그 시작 시 편집 중 표시 emit
     if (tool === 'select' && selectedIndices.size > 0) {
       const targetName = e.target.name?.() ?? '';
       if (!targetName.startsWith('resize-') && !targetName.startsWith('multi-') && !targetName.includes('rotate')) {
@@ -1559,7 +1561,7 @@ export default function Board() {
       }
     }
 
-    // Mindmap tool click (Feature 2)
+    // 마인드맵 툴 클릭
     if (tool === 'mindmap' && !isViewOnly) {
       const pos = getCanvasPos(stage);
       if (pos) {
@@ -1568,7 +1570,7 @@ export default function Board() {
       }
     }
 
-    // Formula tool click (Feature 3)
+    // 수식 툴 클릭
     if (tool === 'formula' && !isViewOnly) {
       const pos = getCanvasPos(stage);
       if (pos) {
@@ -1577,7 +1579,7 @@ export default function Board() {
       }
     }
 
-    // iframe tool click (Feature 7)
+    // iframe 툴 클릭
     if (tool === 'iframe' && !isViewOnly) {
       const pos = getCanvasPos(stage);
       if (pos) {
@@ -1588,7 +1590,7 @@ export default function Board() {
       }
     }
 
-    // Ctrl+Click to open link (Feature 6)
+    // Ctrl+Click으로 링크 열기
     if (tool === 'select' && e.evt.ctrlKey) {
       const pos = getCanvasPos(stage);
       if (pos) {
@@ -1608,14 +1610,14 @@ export default function Board() {
   }, [_handleMouseDown, tool, isViewOnly, isCropMode, selectedIndices, elementsRef, getCanvasPos, handleMindmapClick, handleFormulaCreate]);
 
   const handleMouseUp = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
-    // Crop handle release (Feature 1)
+    // 크롭 핸들 해제
     if (cropHandleRef.current) {
       cropHandleRef.current = null;
       cropOriginRef.current = null;
       return;
     }
 
-    // Feature 6: emit element_edit_stop
+    // 마우스 업 시 편집 중 표시 해제
     if (isDraggingSelected.current || isResizingRef.current || isRotatingRef.current) {
       const idx = [...selectedIndicesRef.current][0];
       const el = elementsRef.current[idx];
@@ -1668,7 +1670,7 @@ export default function Board() {
     handleMouseMove(e);
   }, [isCropMode, handleMouseMove, getCanvasPos, imageCache, selectedIndicesRef, setElements]);
 
-  // Wrap handleDblClick to handle code editor (Feature 8)
+  // handleDblClick 래퍼: 코드 에디터 더블클릭 처리
   const handleDblClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     const stage = e.target.getStage();
     if (stage) {
@@ -1870,7 +1872,7 @@ export default function Board() {
     return { selectionRects, groupRects, resizeHandles };
   }, [selectedIndices, elements, stageScale, tool, isViewOnly]);
 
-  // ── Feature 1: Crop handles (when in crop mode) ──
+  // ── 이미지 크롭 핸들 (크롭 모드 활성화 시) ──
   const cropHandles = useMemo(() => {
     if (!isCropMode || selectedIndices.size !== 1) return [];
     const idx = [...selectedIndices][0];
@@ -2049,7 +2051,7 @@ export default function Board() {
         />
       )}
 
-      {/* 줌 슬라이더 (Feature 8) */}
+      {/* 줌 슬라이더 */}
       <div style={{ position:'absolute', bottom:'20px', left:'50%', transform:'translateX(-50%)', zIndex:10, display:'flex', alignItems:'center', gap:'8px', padding:'6px 14px', backgroundColor: theme.panel, borderRadius:'20px', boxShadow: theme.shadow, fontSize:'13px', color: theme.textMuted }}>
         <button onClick={() => setStageScale(prev => Math.max(prev / 1.25, 0.05))} title="축소 (-)" style={{ ...iconBtn, padding:'0' }}><ZoomOut size={16}/></button>
         <input type="range" min="5" max="1000" value={Math.round(stageScale * 100)}
@@ -2112,7 +2114,7 @@ export default function Board() {
             {[...selectedIndices].every(i => elements[i]?.locked) ? <Unlock size={18}/> : <Lock size={18}/>}
           </button>
           <button onClick={deleteSelected} title="삭제 (Del)" style={{ ...layerBtn(), color:'#ef4444' }}><Trash2 size={18}/></button>
-          {/* Feature 9: Sticky Vote */}
+          {/* 스티키 노트 투표 */}
           {selectedIndices.size === 1 && singleIdx !== null && elements[singleIdx]?.tool === 'sticky' && (
             <>
               <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
@@ -2124,7 +2126,7 @@ export default function Board() {
             </>
           )}
 
-          {/* Feature 5: Voice Memo for Pin */}
+          {/* 핀의 음성 메모 */}
           {selectedIndices.size === 1 && singleIdx !== null && elements[singleIdx]?.tool === 'pin' && !isViewOnly && (
             <>
               <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
@@ -2148,7 +2150,7 @@ export default function Board() {
             </>
           )}
 
-          {/* Feature 2: OCR for pen */}
+          {/* 손글씨 OCR */}
           {selectedIndices.size === 1 && singleIdx !== null && elements[singleIdx]?.tool === 'pen' && !isViewOnly && (
             <>
               <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
@@ -2159,7 +2161,7 @@ export default function Board() {
             </>
           )}
 
-          {/* Feature 6: Link for any element */}
+          {/* URL 링크 첨부 */}
           {selectedIndices.size === 1 && singleIdx !== null && !isViewOnly && (
             <>
               <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
@@ -2170,7 +2172,7 @@ export default function Board() {
             </>
           )}
 
-          {/* Feature 1: Crop button for single image */}
+          {/* 이미지 크롭 */}
           {selectedIndices.size === 1 && singleIdx !== null && elements[singleIdx]?.tool === 'image' && (
             <>
               <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
@@ -2195,7 +2197,7 @@ export default function Board() {
         </div>
       )}
 
-      {/* Feature 11: Bulk Color Change (multiple selection) */}
+      {/* 일괄 색상/스타일 변경 (다중 선택) */}
       {selectedIndices.size > 1 && !isViewOnly && (() => {
         const selArr = [...selectedIndices];
         const bounds = selArr.map(i => getElementBounds(elements[i])).filter(Boolean);
@@ -2497,7 +2499,7 @@ export default function Board() {
               );
             });
           })}
-          {/* Feature 6: Edit indicators */}
+          {/* 실시간 편집 표시 */}
           {Object.entries(editingIndicators).map(([elementId, info]) => {
             const el = elements.find(e => e.id === elementId);
             if (!el) return null;
@@ -2640,7 +2642,7 @@ export default function Board() {
         />
       )}
 
-      {/* Feature 9: Template Gallery */}
+      {/* 템플릿 갤러리 */}
       {showTemplateGallery && (
         <TemplateGallery
           theme={theme}
@@ -2649,7 +2651,7 @@ export default function Board() {
         />
       )}
 
-      {/* Feature 10: Shortcut Settings */}
+      {/* 단축키 설정 */}
       {showShortcutSettings && (
         <ShortcutSettings
           theme={theme}
@@ -2659,7 +2661,7 @@ export default function Board() {
         />
       )}
 
-      {/* Feature 12: Timer Widget */}
+      {/* 타이머 위젯 */}
       {showTimer && (
         <div
           style={{ position:'absolute', left: timerPosState.x, top: timerPosState.y, zIndex:50, backgroundColor: theme.panel, borderRadius:'12px', boxShadow: theme.shadow, border:`1px solid ${theme.border}`, padding:'12px 16px', minWidth:'200px', userSelect:'none' }}
@@ -2721,7 +2723,7 @@ export default function Board() {
         </div>
       )}
 
-      {/* Feature 5: DM Modal */}
+      {/* 다이렉트 메시지 모달 */}
       {dmTarget && (
         <div style={{ position:'fixed', inset:0, zIndex:200, backgroundColor:'rgba(0,0,0,0.3)', display:'flex', alignItems:'center', justifyContent:'center' }}
           onClick={() => setDmTarget(null)}>
@@ -2758,7 +2760,7 @@ export default function Board() {
         </div>
       )}
 
-      {/* Feature 5: DM Toasts */}
+      {/* DM 토스트 알림 */}
       <div style={{ position:'fixed', bottom:'80px', right:'20px', zIndex:200, display:'flex', flexDirection:'column', gap:'8px', pointerEvents:'none' }}>
         {dmToastList.map(t => (
           <div key={t.id} style={{ padding:'10px 16px', borderRadius:'8px', fontSize:'13px', fontWeight:'500', backgroundColor:'#8b5cf6', color:'white', boxShadow:'0 4px 12px rgba(0,0,0,0.2)', animation:'slideIn 0.3s ease', maxWidth:'280px' }}>
@@ -2767,7 +2769,7 @@ export default function Board() {
         ))}
       </div>
 
-      {/* Feature 7: History Diff Panel */}
+      {/* 변경 이력 diff 패널 */}
       {showHistoryDiff && (
         <HistoryDiffPanel
           events={timelineEvents}
@@ -2776,7 +2778,7 @@ export default function Board() {
         />
       )}
 
-      {/* Feature 6: Editing indicator labels (HTML overlay) */}
+      {/* 편집 중 표시 레이블 */}
       {Object.entries(editingIndicators).map(([elementId, info]) => {
         const el = elements.find(e => e.id === elementId);
         if (!el) return null;
@@ -2790,7 +2792,7 @@ export default function Board() {
         );
       })}
 
-      {/* Feature 6: Link icon overlays on canvas elements */}
+      {/* 링크 아이콘 오버레이 */}
       {elements.map((el, idx) => {
         if (!el.linkUrl) return null;
         const b = getElementBounds(el);
@@ -2804,7 +2806,7 @@ export default function Board() {
         );
       })}
 
-      {/* Feature 7: iframe overlays */}
+      {/* iframe 오버레이 */}
       {elements.map((el, idx) => {
         if (el.tool !== 'iframe' || !el.iframeSrc) return null;
         const sc = canvasToScreen(el.points[0], el.points[1]);
@@ -2822,7 +2824,7 @@ export default function Board() {
         );
       })}
 
-      {/* Feature 4: Screen share video overlay */}
+      {/* 화면 공유 비디오 오버레이 */}
       {isScreenSharing && screenShareStream && (
         <div style={{ position:'fixed', bottom:80, right:20, zIndex:50, borderRadius:'8px', overflow:'hidden', border:'2px solid #ef4444', boxShadow:'0 4px 12px rgba(0,0,0,0.3)' }}>
           <video ref={screenVideoRef} autoPlay muted style={{ width:'320px', height:'180px', display:'block' }} />
@@ -2830,7 +2832,7 @@ export default function Board() {
         </div>
       )}
 
-      {/* Feature 6: Link Modal */}
+      {/* URL 링크 모달 */}
       {showLinkModal && (
         <div style={{ position:'fixed', inset:0, zIndex:200, backgroundColor:'rgba(0,0,0,0.3)', display:'flex', alignItems:'center', justifyContent:'center' }}
           onClick={() => setShowLinkModal(false)}>
@@ -2847,7 +2849,7 @@ export default function Board() {
         </div>
       )}
 
-      {/* Feature 7: iframe URL Input Modal */}
+      {/* iframe 임베드 모달 */}
       {showIframeInput && (
         <div style={{ position:'fixed', inset:0, zIndex:200, backgroundColor:'rgba(0,0,0,0.3)', display:'flex', alignItems:'center', justifyContent:'center' }}
           onClick={() => setShowIframeInput(false)}>
@@ -2880,7 +2882,7 @@ export default function Board() {
         </div>
       )}
 
-      {/* Feature 8: Code Editor Modal */}
+      {/* 코드 에디터 모달 */}
       {showCodeEditor && codeEditorIdx !== null && (
         <div style={{ position:'fixed', inset:0, zIndex:200, backgroundColor:'rgba(0,0,0,0.4)', display:'flex', alignItems:'center', justifyContent:'center' }}
           onClick={() => { saveCodeEditor(); }}>
@@ -2908,7 +2910,7 @@ export default function Board() {
         </div>
       )}
 
-      {/* Feature 1: AI Diagram Modal */}
+      {/* AI 다이어그램 생성기 */}
       {showAIDiagram && (
         <AIDiagramModal
           theme={{ ...theme, inputBg: theme.inputBg, inputBorder: theme.inputBorder }}
@@ -2921,7 +2923,7 @@ export default function Board() {
         />
       )}
 
-      {/* Feature 12: Theme Selector */}
+      {/* 보드 테마 선택 */}
       {showThemeSelector && (
         <ThemeSelector
           theme={theme}
@@ -2931,7 +2933,7 @@ export default function Board() {
         />
       )}
 
-      {/* Feature 3: GIF Export (in timeline area) */}
+      {/* 타임라인 프레임 내보내기 */}
       {showTimeline && (
         <div style={{ position:'fixed', bottom:160, right:20, zIndex:20 }}>
           <button onClick={handleGifExport} title="프레임 PNG로 내보내기"
