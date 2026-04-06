@@ -7,8 +7,9 @@ import {
   Magnet, Sun, Moon, Triangle, Spline, Wand2, Layout,
   Waypoints, Workflow, MapPin, AlignLeft, AlignCenter, AlignRight,
   Presentation, Crosshair, QrCode, FileImage, Shapes, Bold, Italic, Underline,
+  Search, Table2,
 } from 'lucide-react';
-import type { ToolType, DashStyle, LineCapStyle } from '../utils/elementHelpers';
+import type { ToolType, DashStyle, LineCapStyle, BrushType } from '../utils/elementHelpers';
 
 const COLORS = ['#000000', '#ef4444', '#3b82f6', '#22c55e', '#f59e0b'];
 const REACTION_EMOJIS = ['👍', '❤️', '😂', '🎉', '🔥', '😮', '👏', '✨'];
@@ -99,6 +100,12 @@ export interface ToolbarProps {
   bgImageInputRef: React.RefObject<HTMLInputElement | null>;
   handleExportSVG: () => void;
   handleShowQRCode: () => void;
+  // 브러시 타입
+  brushType: BrushType;
+  setBrushType: React.Dispatch<React.SetStateAction<BrushType>>;
+  // 검색
+  showSearch: boolean;
+  setShowSearch: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 export default function Toolbar({
@@ -132,6 +139,8 @@ export default function Toolbar({
   fontFamily, setFontFamily, textAlign, setTextAlign,
   isLaserMode, setIsLaserMode, isPresentingMode, setIsPresentingMode,
   bgImageInputRef, handleExportSVG, handleShowQRCode,
+  brushType, setBrushType,
+  showSearch, setShowSearch,
 }: ToolbarProps) {
   const toolBtn = (active: boolean): React.CSSProperties => ({
     background: 'none', border: 'none', cursor: 'pointer',
@@ -172,6 +181,17 @@ export default function Toolbar({
           >
             <Wand2 size={15}/> 스마트 도형
           </button>
+          <span style={{ width:'1px', height:'16px', backgroundColor: theme.border }} />
+          <span style={{ fontSize:'11px', color: theme.textMuted }}>브러시</span>
+          {(['normal', 'marker', 'highlighter', 'airbrush'] as BrushType[]).map(bt => (
+            <button key={bt} onClick={() => setBrushType(bt)}
+              style={{ padding:'2px 6px', borderRadius:'5px', fontSize:'11px', cursor:'pointer',
+                border: brushType === bt ? '2px solid #3b82f6' : `1px solid ${theme.border}`,
+                background: brushType === bt ? '#eff6ff' : 'none',
+                color: brushType === bt ? '#3b82f6' : theme.textMuted }}>
+              {bt === 'normal' ? '일반' : bt === 'marker' ? '마커' : bt === 'highlighter' ? '형광펜' : '에어'}
+            </button>
+          ))}
         </div>
       )}
 
@@ -251,6 +271,9 @@ export default function Toolbar({
             <button onClick={() => setTool('textbox')} title="텍스트박스 — 드래그하여 텍스트 영역 생성" style={toolBtn(tool==='textbox')}><span style={{ fontSize:'14px', fontWeight:'bold', lineHeight:1 }}>A□</span></button>
             <button onClick={() => setShowShapeLibrary(v => !v)} title={`도형 라이브러리 — 현재: ${currentShapeName}`} style={{ ...toolBtn(tool==='shape' || showShapeLibrary), position:'relative' }}>
               <Shapes size={22}/>
+            </button>
+            <button onClick={() => setTool('table')} title="테이블 (B)" style={toolBtn(tool==='table')}>
+              <Table2 size={22}/>
             </button>
           </div>
         )}
@@ -392,6 +415,7 @@ export default function Toolbar({
               <button onClick={() => setShowFramePanel(v => !v)} title="프레임 패널" style={{ ...iconBtn, color: showFramePanel?'#6366f1':'#9ca3af' }}><Layout size={22}/></button>
               <button onClick={() => setShowTimeline(v => !v)} title="타임라인" style={{ ...iconBtn, color: showTimeline?'#6366f1':'#9ca3af' }}>&#9654;</button>
               <button onClick={handleClearAll} title="전체 지우기" style={{ ...iconBtn, color:'#ef4444' }}><Trash2 size={22}/></button>
+              <button onClick={() => setShowSearch(v => !v)} title="검색 (Ctrl+F)" style={{ ...iconBtn, color: showSearch ? '#3b82f6' : '#9ca3af' }}><Search size={22}/></button>
             </>
           )}
           <button onClick={() => setShowHelp(v => !v)} title="단축키 도움말 (?)" style={iconBtn}><HelpCircle size={22}/></button>

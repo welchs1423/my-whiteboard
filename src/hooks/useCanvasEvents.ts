@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import type { RefObject, MutableRefObject, Dispatch, SetStateAction } from 'react';
 import Konva from 'konva';
 import type { Socket } from 'socket.io-client';
-import type { DrawElement, ToolType, DashStyle, Bounds, LineCapStyle } from '../utils/elementHelpers';
+import type { DrawElement, ToolType, DashStyle, Bounds, LineCapStyle, BrushType } from '../utils/elementHelpers';
 import {
   generateId, getElementAtPoint, getElementsInRect, getElementBounds, moveElementBy,
   smoothPoints, simplifyPoints, detectSmartShape, resizeElementWithHandle,
@@ -39,6 +39,13 @@ export interface CanvasEventsParams {
   isResizingRef: MutableRefObject<boolean>;
   resizeHandleRef: MutableRefObject<ResizeHandle | null>;
   resizeOriginalRef: MutableRefObject<{ el: DrawElement; bounds: Bounds; idx: number; startPos: { x: number; y: number } } | null>;
+  // 회전
+  isRotatingRef: MutableRefObject<boolean>;
+  rotateOriginRef: MutableRefObject<{ cx: number; cy: number; startAngle: number; origRotation: number; idx: number } | null>;
+  // 다중 리사이즈
+  isMultiResizingRef: MutableRefObject<boolean>;
+  multiResizeHandleRef: MutableRefObject<ResizeHandle | null>;
+  multiResizeOriginRef: MutableRefObject<{ unionBounds: Bounds; origElements: { idx: number; el: DrawElement }[]; startPos: { x: number; y: number } } | null>;
   // State values
   contextMenu: { x: number; y: number } | null;
   elements: DrawElement[];
@@ -58,6 +65,7 @@ export interface CanvasEventsParams {
   currentShapeName: string;   // 도형 라이브러리 기본 선택
   gradientColors: [string, string] | null;
   gradientAngle: number;
+  brushType: BrushType;
   // Setters
   setContextMenu: Dispatch<SetStateAction<{ x: number; y: number } | null>>;
   setEmojiReactions: Dispatch<SetStateAction<EmojiReaction[]>>;
@@ -66,6 +74,8 @@ export interface CanvasEventsParams {
   setSelectedIndices: Dispatch<SetStateAction<Set<number>>>;
   setBoxSelectRect: Dispatch<SetStateAction<Bounds | null>>;
   setStagePos: (v: { x: number; y: number }) => void;
+  setSnapLines: Dispatch<SetStateAction<{ type: 'x' | 'y'; pos: number }[]>>;
+  setTableCellEdit?: (v: { idx: number; row: number; col: number; value: string } | null) => void;
   // Functions
   getCanvasPos: (stage: Konva.Stage) => { x: number; y: number } | null;
   snap: (v: number) => number;
@@ -204,6 +214,52 @@ export function useCanvasEvents(p: CanvasEventsParams) {
     if (p.tool === 'select') {
       // 리사이즈 핸들 클릭 감지
       const targetName = (e.target as Konva.Node).name();
+
+      // 회전 핸들
+      if (targetName === 'rotate-handle' && p.selectedIndices.size === 1) {
+        const idx = [...p.selectedIndices][0];
+        if (idx < p.elements.length) {
+          const el = p.elements[idx];
+          const b = getElementBounds(el);
+          if (b && !el.locked) {
+            const cx = b.x + b.width / 2;
+            const cy = b.y + b.height / 2;
+            p.isRotatingRef.current = true;
+            p.rotateOriginRef.current = {
+              cx, cy,
+              startAngle: Math.atan2(pos.y - cy, pos.x - cx),
+              origRotation: el.rotation ?? 0,
+              idx,
+            };
+            return;
+          }
+        }
+      }
+
+      // 다중 리사이즈 핸들
+      if (targetName.startsWith('multi-resize-') && p.selectedIndices.size > 1) {
+        const handle = targetName.replace('multi-resize-', '') as ResizeHandle;
+        const selectedArr = [...p.selectedIndices];
+        const allBounds = selectedArr.map(i => getElementBounds(p.elements[i]));
+        const validBounds = allBounds.filter(Boolean) as Bounds[];
+        if (validBounds.length > 0) {
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          validBounds.forEach(b => {
+            minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+            maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
+          });
+          const unionBounds: Bounds = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+          p.isMultiResizingRef.current = true;
+          p.multiResizeHandleRef.current = handle;
+          p.multiResizeOriginRef.current = {
+            unionBounds,
+            origElements: selectedArr.map(i => ({ idx: i, el: { ...p.elements[i], points: [...p.elements[i].points] } })),
+            startPos: pos,
+          };
+          return;
+        }
+      }
+
       if (targetName.startsWith('resize-') && p.selectedIndices.size === 1) {
         const handle = targetName.replace('resize-', '') as ResizeHandle;
         const idx = [...p.selectedIndices][0];
@@ -274,7 +330,8 @@ export function useCanvasEvents(p: CanvasEventsParams) {
       ...(p.tool === 'frame' ? { frameTitle: 'Frame' } : {}),
       ...(p.tool === 'shape' ? { shapeName: p.currentShapeName } : {}),
       ...(p.isFilled && p.gradientColors ? { gradientColors: p.gradientColors, gradientAngle: p.gradientAngle } : {}),
-      ...(p.tool === 'pen' ? { widths: [p.strokeWidth] } : {}),
+      ...(p.tool === 'pen' ? { widths: [p.strokeWidth], brushType: p.brushType } : {}),
+      ...(p.tool === 'table' ? { rows: 3, cols: 3, tableData: Array.from({ length: 3 }, () => Array(3).fill('') as string[]) } : {}),
     };
     p.lastPenTime.current = Date.now();
     p.setElements(prev => {
@@ -283,7 +340,7 @@ export function useCanvasEvents(p: CanvasEventsParams) {
       return upd;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.contextMenu, p.elements, p.selectedIndices, p.tool, p.isEmojiMode, p.selectedEmoji, p.nickname, p.isViewOnly, p.currentColor, p.strokeWidth, p.isFilled, p.currentDash, p.currentLineCap, p.currentOpacity, p.stickyBg, p.currentShapeName, p.gradientColors, p.gradientAngle, p.getCanvasPos, p.snap, p.commitText]);
+  }, [p.contextMenu, p.elements, p.selectedIndices, p.tool, p.isEmojiMode, p.selectedEmoji, p.nickname, p.isViewOnly, p.currentColor, p.strokeWidth, p.isFilled, p.currentDash, p.currentLineCap, p.currentOpacity, p.stickyBg, p.currentShapeName, p.gradientColors, p.gradientAngle, p.brushType, p.getCanvasPos, p.snap, p.commitText]);
 
   const handleMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     if (p.isPanning.current && p.panStart.current) {
@@ -305,6 +362,59 @@ export function useCanvasEvents(p: CanvasEventsParams) {
     }
 
     if (p.toolRef.current === 'select') {
+      // 회전 처리
+      if (p.isRotatingRef.current && p.rotateOriginRef.current) {
+        const { cx, cy, startAngle, origRotation, idx } = p.rotateOriginRef.current;
+        const newAngle = Math.atan2(point.y - cy, point.x - cx);
+        const deltaAngle = (newAngle - startAngle) * 180 / Math.PI;
+        const newRotation = origRotation + deltaAngle;
+        p.setElements(prev => {
+          const upd = [...prev];
+          if (idx < upd.length) {
+            const updated = { ...upd[idx], rotation: newRotation };
+            upd[idx] = updated;
+            p.socket.emit('update_element', updated);
+          }
+          return upd;
+        });
+        return;
+      }
+
+      // 다중 리사이즈 처리
+      if (p.isMultiResizingRef.current && p.multiResizeOriginRef.current) {
+        const { unionBounds, origElements, startPos } = p.multiResizeOriginRef.current;
+        const handle = p.multiResizeHandleRef.current!;
+        const dx = point.x - startPos.x;
+        const dy = point.y - startPos.y;
+        const rawLeft = unionBounds.x, rawTop = unionBounds.y;
+        const rawRight = unionBounds.x + unionBounds.width;
+        const rawBottom = unionBounds.y + unionBounds.height;
+        let newLeft = rawLeft, newTop = rawTop, newRight = rawRight, newBottom = rawBottom;
+        if (handle.includes('w')) newLeft = Math.min(rawLeft + dx, rawRight - 1);
+        if (handle.includes('e')) newRight = Math.max(rawRight + dx, rawLeft + 1);
+        if (handle.includes('n')) newTop = Math.min(rawTop + dy, rawBottom - 1);
+        if (handle.includes('s')) newBottom = Math.max(rawBottom + dy, rawTop + 1);
+        const scaleX = (newRight - newLeft) / Math.max(unionBounds.width, 1);
+        const scaleY = (newBottom - newTop) / Math.max(unionBounds.height, 1);
+        p.setElements(prev => {
+          const upd = [...prev];
+          origElements.forEach(({ idx, el }) => {
+            if (idx < upd.length) {
+              const scaled = {
+                ...el,
+                points: el.points.map((pt, k) =>
+                  k % 2 === 0 ? newLeft + (pt - unionBounds.x) * scaleX : newTop + (pt - unionBounds.y) * scaleY
+                ),
+              };
+              upd[idx] = scaled;
+              p.socket.emit('update_element', scaled);
+            }
+          });
+          return upd;
+        });
+        return;
+      }
+
       // 리사이즈 처리
       if (p.isResizingRef.current && p.resizeOriginalRef.current) {
         const { el: origEl, bounds: origBounds, idx, startPos } = p.resizeOriginalRef.current;
@@ -336,6 +446,45 @@ export function useCanvasEvents(p: CanvasEventsParams) {
           });
           return upd;
         });
+        // 스냅 가이드라인 계산
+        const SNAP_THRESHOLD = 8;
+        const snapLines: { type: 'x' | 'y'; pos: number }[] = [];
+        const draggedBounds = p.dragOriginals.current
+          .map(({ el }) => getElementBounds(el))
+          .filter(Boolean) as Bounds[];
+        if (draggedBounds.length > 0) {
+          const movMinX = Math.min(...draggedBounds.map(b => b.x)) + dx;
+          const movMinY = Math.min(...draggedBounds.map(b => b.y)) + dy;
+          const movMaxX = Math.max(...draggedBounds.map(b => b.x + b.width)) + dx;
+          const movMaxY = Math.max(...draggedBounds.map(b => b.y + b.height)) + dy;
+          const movCX = (movMinX + movMaxX) / 2;
+          const movCY = (movMinY + movMaxY) / 2;
+          const selectedSet = p.selectedIndices;
+          p.elementsRef.current!.forEach((el, i) => {
+            if (selectedSet.has(i)) return;
+            const b = getElementBounds(el);
+            if (!b) return;
+            const txEdges = [b.x, b.x + b.width, b.x + b.width / 2];
+            const sxEdges = [movMinX, movMaxX, movCX];
+            for (const te of txEdges) {
+              for (const se of sxEdges) {
+                if (Math.abs(te - se) < SNAP_THRESHOLD && !snapLines.find(s => s.type === 'x' && s.pos === te)) {
+                  snapLines.push({ type: 'x', pos: te });
+                }
+              }
+            }
+            const tyEdges = [b.y, b.y + b.height, b.y + b.height / 2];
+            const syEdges = [movMinY, movMaxY, movCY];
+            for (const te of tyEdges) {
+              for (const se of syEdges) {
+                if (Math.abs(te - se) < SNAP_THRESHOLD && !snapLines.find(s => s.type === 'y' && s.pos === te)) {
+                  snapLines.push({ type: 'y', pos: te });
+                }
+              }
+            }
+          });
+        }
+        p.setSnapLines(snapLines);
       } else if (p.isBoxSelecting.current && p.boxSelectStart.current) {
         const r: Bounds = {
           x: p.boxSelectStart.current.x,
@@ -380,12 +529,29 @@ export function useCanvasEvents(p: CanvasEventsParams) {
       return upd;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.getCanvasPos, p.snap, p.setStagePos, p.lastCursorEmit, p.toolRef]);
+  }, [p.getCanvasPos, p.snap, p.setStagePos, p.lastCursorEmit, p.toolRef, p.setSnapLines]);
 
   const handleMouseUp = useCallback(() => {
     if (p.isPanning.current) { p.isPanning.current = false; p.panStart.current = null; return; }
 
     if (p.toolRef.current === 'select') {
+      // 회전 완료
+      if (p.isRotatingRef.current) {
+        p.isRotatingRef.current = false;
+        p.rotateOriginRef.current = null;
+        p.setElements(latest => { p.saveHistoryWith(latest); return latest; });
+        return;
+      }
+
+      // 다중 리사이즈 완료
+      if (p.isMultiResizingRef.current) {
+        p.isMultiResizingRef.current = false;
+        p.multiResizeHandleRef.current = null;
+        p.multiResizeOriginRef.current = null;
+        p.setElements(latest => { p.saveHistoryWith(latest); return latest; });
+        return;
+      }
+
       // 리사이즈 완료
       if (p.isResizingRef.current) {
         p.isResizingRef.current = false;
@@ -400,6 +566,7 @@ export function useCanvasEvents(p: CanvasEventsParams) {
         p.dragStartPos.current = null;
         p.dragOriginals.current = [];
         p.setElements(latest => { p.saveHistoryWith(latest); return latest; });
+        p.setSnapLines([]);
       }
       if (p.isBoxSelecting.current) {
         p.isBoxSelecting.current = false;
@@ -438,6 +605,15 @@ export function useCanvasEvents(p: CanvasEventsParams) {
           const h = Math.abs(last.points[3] - last.points[1]) - 12;
           p.setTextInput({ x: nx, y: ny, value: '', targetIdx: latest.length - 1, width: w, height: h } as unknown as TextInputState);
         }
+        return latest;
+      });
+      return;
+    }
+
+    // 테이블 mouseup
+    if (p.toolRef.current === 'table') {
+      p.setElements(latest => {
+        p.saveHistoryWith(latest);
         return latest;
       });
       return;
@@ -500,9 +676,23 @@ export function useCanvasEvents(p: CanvasEventsParams) {
       p.setTextInput({ x: nx, y: ny, value: el.text || '', targetIdx: idx, width: w, height: h } as unknown as TextInputState);
     } else if (el.tool === 'pin') {
       p.setTextInput({ x: el.points[0] + 18, y: el.points[1] - 30, value: el.pinText || el.text || '', targetIdx: idx });
+    } else if (el.tool === 'table') {
+      const x = Math.min(el.points[0], el.points[2]);
+      const y = Math.min(el.points[1], el.points[3]);
+      const w = Math.abs(el.points[2] - el.points[0]);
+      const h = Math.abs(el.points[3] - el.points[1]);
+      const rows = el.rows ?? 3;
+      const cols = el.cols ?? 3;
+      const cellW = w / cols;
+      const cellH = h / rows;
+      const col = Math.floor((pos.x - x) / cellW);
+      const row = Math.floor((pos.y - y) / cellH);
+      if (row >= 0 && row < rows && col >= 0 && col < cols && p.setTableCellEdit) {
+        p.setTableCellEdit({ idx, row, col, value: el.tableData?.[row]?.[col] || '' });
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.tool, p.elements, p.getCanvasPos]);
+  }, [p.tool, p.elements, p.getCanvasPos, p.setTableCellEdit]);
 
   return { handleMouseDown, handleMouseMove, handleMouseUp, handleDblClick };
 }

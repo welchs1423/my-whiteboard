@@ -1,7 +1,23 @@
+import { cloneElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import type { MutableRefObject } from 'react';
 import { Line, Rect, Ellipse, Text, Arrow, Image as KonvaImage, Group, Path } from 'react-konva';
 import type { DrawElement } from './elementHelpers';
 import { getDashArray, getElementBounds } from './elementHelpers';
+
+// ── 회전 래퍼 헬퍼 ──────────────────────────────────────────────────
+function withRotation(node: ReactElement, el: DrawElement, i: number): ReactNode {
+  if (!el.rotation) return cloneElement(node, { key: i });
+  const b = getElementBounds(el);
+  if (!b) return cloneElement(node, { key: i });
+  const cx = b.x + b.width / 2;
+  const cy = b.y + b.height / 2;
+  return (
+    <Group key={i} x={cx} y={cy} rotation={el.rotation} offsetX={cx} offsetY={cy}>
+      {node}
+    </Group>
+  );
+}
 
 // ── 도형 라이브러리 패스 (0~1 정규화 좌표) ──────────────────────────
 export const SHAPE_PATHS: Record<string, string> = {
@@ -37,27 +53,39 @@ export function renderElement(
   const op = el.opacity ?? 1;
   const dash = getDashArray(el.dash, stageScale);
 
-  // ── 펜 (속도 감응 선 굵기 지원) ──
+  // ── 펜 (브러시 타입 + 속도 감응 선 굵기 지원) ──
   if (el.tool === 'pen' || el.tool === 'eraser') {
+    let effectiveOp = op;
+    let widthMult = 1;
+    let lc: 'round' | 'square' | 'butt' = el.lineCap ?? 'round';
+    if (el.tool === 'pen') {
+      switch (el.brushType) {
+        case 'marker':      widthMult = 2; lc = 'square'; effectiveOp = op * 0.9; break;
+        case 'highlighter': widthMult = 4; lc = 'square'; effectiveOp = 0.4; break;
+        case 'airbrush':    widthMult = 3; effectiveOp = 0.3; break;
+      }
+    }
     if (el.widths && el.widths.length > 1 && el.tool === 'pen') {
       const n = el.widths.length - 1;
-      return (
-        <Group key={i} opacity={op}>
+      return withRotation(
+        <Group opacity={effectiveOp}>
           {Array.from({ length: n }, (_, j) => (
             <Line key={j}
               points={[el.points[j*2], el.points[j*2+1], el.points[(j+1)*2], el.points[(j+1)*2+1]]}
               stroke={el.color}
-              strokeWidth={(el.widths![j] + el.widths![j+1]) / 2}
-              lineCap={el.lineCap ?? 'round'} lineJoin="round"
+              strokeWidth={(el.widths![j] + el.widths![j+1]) / 2 * widthMult}
+              lineCap={lc} lineJoin="round"
             />
           ))}
-        </Group>
+        </Group>,
+        el, i,
       );
     }
-    return (
-      <Line key={i} points={el.points} stroke={el.color} strokeWidth={el.strokeWidth}
-        tension={0.5} lineCap={el.lineCap ?? 'round'} lineJoin="round" opacity={op}
-        globalCompositeOperation={el.tool === 'eraser' ? 'destination-out' : 'source-over'} />
+    return withRotation(
+      <Line points={el.points} stroke={el.color} strokeWidth={el.strokeWidth * widthMult}
+        tension={0.5} lineCap={lc} lineJoin="round" opacity={effectiveOp}
+        globalCompositeOperation={el.tool === 'eraser' ? 'destination-out' : 'source-over'} />,
+      el, i,
     );
   }
 
@@ -66,47 +94,51 @@ export function renderElement(
     const y = Math.min(el.points[1], el.points[3]);
     const w = Math.abs(el.points[2] - el.points[0]);
     const h = Math.abs(el.points[3] - el.points[1]);
-    return (
-      <Rect key={i} x={x} y={y} width={w} height={h}
+    return withRotation(
+      <Rect x={x} y={y} width={w} height={h}
         stroke={el.color} strokeWidth={el.strokeWidth}
         {...fillProps(el, w, h)}
-        dash={dash} opacity={op} />
+        dash={dash} opacity={op} />,
+      el, i,
     );
   }
   if (el.tool === 'circle' && el.points.length >= 4) {
     const w = Math.abs(el.points[2] - el.points[0]);
     const h = Math.abs(el.points[3] - el.points[1]);
-    return (
-      <Ellipse key={i}
+    return withRotation(
+      <Ellipse
         x={(el.points[0] + el.points[2]) / 2} y={(el.points[1] + el.points[3]) / 2}
         radiusX={w / 2} radiusY={h / 2}
         stroke={el.color} strokeWidth={el.strokeWidth}
         {...fillProps(el, w, h)}
-        dash={dash} opacity={op} />
+        dash={dash} opacity={op} />,
+      el, i,
     );
   }
   if (el.tool === 'triangle' && el.points.length >= 4) {
     const [x1, y1, x2, y2] = el.points;
     const midX = (x1 + x2) / 2;
     const w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
-    return (
-      <Line key={i} points={[midX, y1, x2, y2, x1, y2]} closed
+    return withRotation(
+      <Line points={[midX, y1, x2, y2, x1, y2]} closed
         stroke={el.color} strokeWidth={el.strokeWidth}
         {...fillProps(el, w, h)}
-        dash={dash} opacity={op} lineCap="round" lineJoin="round" />
+        dash={dash} opacity={op} lineCap="round" lineJoin="round" />,
+      el, i,
     );
   }
 
   // ── 텍스트 (리치 텍스트 지원) ──
   if (el.tool === 'text' && el.text) {
-    return (
-      <Text key={i} x={el.points[0]} y={el.points[1]} text={el.text}
+    return withRotation(
+      <Text x={el.points[0]} y={el.points[1]} text={el.text}
         fontSize={el.fontSize || 20} fill={el.color}
         fontFamily={el.fontFamily || 'sans-serif'}
         fontStyle={el.fontStyle || 'normal'}
         textDecoration={el.textDecoration || ''}
         align={(el.textAlign as 'left'|'center'|'right') || 'left'}
-        opacity={op} />
+        opacity={op} />,
+      el, i,
     );
   }
 
@@ -116,8 +148,8 @@ export function renderElement(
     const y = Math.min(el.points[1], el.points[3]);
     const w = Math.abs(el.points[2] - el.points[0]);
     const h = Math.abs(el.points[3] - el.points[1]);
-    return (
-      <Group key={i} opacity={op}>
+    return withRotation(
+      <Group opacity={op}>
         <Rect x={x} y={y} width={w} height={h}
           stroke={el.color} strokeWidth={el.strokeWidth}
           fill={el.filled ? el.color : 'transparent'}
@@ -132,22 +164,25 @@ export function renderElement(
             align={(el.textAlign as 'left'|'center'|'right') || 'left'}
             wrap="word" />
         )}
-      </Group>
+      </Group>,
+      el, i,
     );
   }
 
   if (el.tool === 'straight' && el.points.length >= 4) {
-    return (
-      <Line key={i} points={[el.points[0], el.points[1], el.points[2], el.points[3]]}
-        stroke={el.color} strokeWidth={el.strokeWidth} lineCap={el.lineCap ?? 'round'} dash={dash} opacity={op} />
+    return withRotation(
+      <Line points={[el.points[0], el.points[1], el.points[2], el.points[3]]}
+        stroke={el.color} strokeWidth={el.strokeWidth} lineCap={el.lineCap ?? 'round'} dash={dash} opacity={op} />,
+      el, i,
     );
   }
   if (el.tool === 'arrow' && el.points.length >= 4) {
-    return (
-      <Arrow key={i} points={[el.points[0], el.points[1], el.points[2], el.points[3]]}
+    return withRotation(
+      <Arrow points={[el.points[0], el.points[1], el.points[2], el.points[3]]}
         stroke={el.color} strokeWidth={el.strokeWidth} fill={el.color}
         pointerLength={12} pointerWidth={10} dash={dash} opacity={op}
-        lineCap={el.lineCap ?? 'round'} />
+        lineCap={el.lineCap ?? 'round'} />,
+      el, i,
     );
   }
 
@@ -158,10 +193,11 @@ export function renderElement(
     for (let j = 2; j + 3 < el.points.length; j += 4) {
       d += ` Q ${el.points[j]} ${el.points[j+1]} ${el.points[j+2]} ${el.points[j+3]}`;
     }
-    return (
-      <Path key={i} data={d} stroke={el.color} strokeWidth={el.strokeWidth}
+    return withRotation(
+      <Path data={d} stroke={el.color} strokeWidth={el.strokeWidth}
         lineCap={el.lineCap ?? 'round'} dash={dash} opacity={op}
-        fill={el.filled ? el.color : 'transparent'} />
+        fill={el.filled ? el.color : 'transparent'} />,
+      el, i,
     );
   }
 
@@ -182,15 +218,16 @@ export function renderElement(
     const cpX = (sx + ex) / 2;
     const cpY = Math.min(sy, ey) - Math.abs(ey - sy) * 0.4;
     const d = `M ${sx} ${sy} Q ${cpX} ${cpY} ${ex} ${ey}`;
-    return (
-      <Group key={i} opacity={op}>
+    return withRotation(
+      <Group opacity={op}>
         <Path data={d} stroke={el.color} strokeWidth={el.strokeWidth}
           lineCap="round" dash={dash} fill="transparent" />
         <Arrow
           points={[cpX + (ex - cpX) * 0.8, cpY + (ey - cpY) * 0.8, ex, ey]}
           stroke={el.color} fill={el.color}
           strokeWidth={el.strokeWidth} pointerLength={10} pointerWidth={8} />
-      </Group>
+      </Group>,
+      el, i,
     );
   }
 
@@ -198,8 +235,8 @@ export function renderElement(
   if (el.tool === 'pin') {
     const px = el.points[0], py = el.points[1];
     const txt = el.pinText || el.text || '';
-    return (
-      <Group key={i} opacity={op}>
+    return withRotation(
+      <Group opacity={op}>
         <Ellipse x={px} y={py - 20} radiusX={10} radiusY={10}
           fill={el.color} stroke="white" strokeWidth={2} />
         <Line points={[px, py - 10, px, py]} stroke={el.color} strokeWidth={2} lineCap="round" />
@@ -212,7 +249,8 @@ export function renderElement(
               width={Math.min(txt.length * 7, 168)} />
           </>
         )}
-      </Group>
+      </Group>,
+      el, i,
     );
   }
 
@@ -223,13 +261,14 @@ export function renderElement(
     const w = Math.abs(el.points[2] - el.points[0]);
     const h = Math.abs(el.points[3] - el.points[1]);
     const pathData = SHAPE_PATHS[el.shapeName || 'diamond'];
-    return (
-      <Path key={i} x={x} y={y} scaleX={w} scaleY={h}
+    return withRotation(
+      <Path x={x} y={y} scaleX={w} scaleY={h}
         data={pathData}
         stroke={el.color} strokeWidth={el.strokeWidth / Math.max(w, 1)}
         strokeScaleEnabled={false}
         {...fillProps(el, 1, 1)}
-        dash={dash} opacity={op} />
+        dash={dash} opacity={op} />,
+      el, i,
     );
   }
 
@@ -238,8 +277,8 @@ export function renderElement(
     const y = Math.min(el.points[1], el.points[3]);
     const w = Math.max(80, Math.abs(el.points[2] - el.points[0]));
     const h = Math.max(60, Math.abs(el.points[3] - el.points[1]));
-    return (
-      <Group key={i} opacity={op}>
+    return withRotation(
+      <Group opacity={op}>
         <Rect x={x} y={y} width={w} height={h} fill={el.stickyBg || '#fef08a'}
           stroke="#ca8a04" strokeWidth={1} cornerRadius={4}
           shadowColor="rgba(0,0,0,0.15)" shadowBlur={6} shadowOffsetY={2} shadowEnabled />
@@ -247,16 +286,18 @@ export function renderElement(
           <Text x={x + 8} y={y + 8} text={el.text} width={w - 16}
             fontSize={el.fontSize || 14} fill="#1c1917" fontFamily="sans-serif" wrap="word" />
         )}
-      </Group>
+      </Group>,
+      el, i,
     );
   }
   if (el.tool === 'image' && el.imageDataUrl) {
     const img = imageCache.current.get(el.imageDataUrl);
     if (!img) return null;
-    return (
-      <KonvaImage key={i} image={img} x={el.points[0]} y={el.points[1]}
+    return withRotation(
+      <KonvaImage image={img} x={el.points[0]} y={el.points[1]}
         width={el.points[2] || img.naturalWidth} height={el.points[3] || img.naturalHeight}
-        opacity={op} />
+        opacity={op} />,
+      el, i,
     );
   }
   if (el.tool === 'frame' && el.points.length >= 4) {
@@ -264,8 +305,8 @@ export function renderElement(
     const y = Math.min(el.points[1], el.points[3]);
     const w = Math.abs(el.points[2] - el.points[0]);
     const h = Math.abs(el.points[3] - el.points[1]);
-    return (
-      <Group key={i} opacity={op}>
+    return withRotation(
+      <Group opacity={op}>
         <Rect x={x} y={y} width={w} height={h}
           fill="white" stroke="#6366f1" strokeWidth={2}
           dash={[8, 4]} cornerRadius={4} listening={false} />
@@ -273,9 +314,54 @@ export function renderElement(
           fill="#6366f1" cornerRadius={[4, 4, 0, 0]} listening={false} />
         <Text x={x + 6} y={y - 19} text={el.frameTitle || `Frame`}
           fontSize={12} fill="white" fontFamily="sans-serif" listening={false} />
-      </Group>
+      </Group>,
+      el, i,
     );
   }
+
+  // ── 테이블 ──
+  if (el.tool === 'table' && el.points.length >= 4) {
+    const x = Math.min(el.points[0], el.points[2]);
+    const y = Math.min(el.points[1], el.points[3]);
+    const w = Math.abs(el.points[2] - el.points[0]);
+    const h = Math.abs(el.points[3] - el.points[1]);
+    const rows = el.rows ?? 3;
+    const cols = el.cols ?? 3;
+    const cellW = w / cols;
+    const cellH = h / rows;
+    const lines: ReactNode[] = [];
+    for (let r = 1; r < rows; r++) {
+      lines.push(<Line key={`h${r}`} points={[x, y + r * cellH, x + w, y + r * cellH]}
+        stroke={el.color} strokeWidth={el.strokeWidth} listening={false} />);
+    }
+    for (let c = 1; c < cols; c++) {
+      lines.push(<Line key={`v${c}`} points={[x + c * cellW, y, x + c * cellW, y + h]}
+        stroke={el.color} strokeWidth={el.strokeWidth} listening={false} />);
+    }
+    const texts: ReactNode[] = [];
+    if (el.tableData) {
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const cellText = el.tableData[r]?.[c];
+          if (cellText) {
+            texts.push(<Text key={`t${r}-${c}`} x={x + c * cellW + 4} y={y + r * cellH + 4}
+              text={cellText} fontSize={el.fontSize || 13} fill={el.color}
+              width={cellW - 8} height={cellH - 8} wrap="word" fontFamily="sans-serif" />);
+          }
+        }
+      }
+    }
+    return withRotation(
+      <Group opacity={op}>
+        <Rect x={x} y={y} width={w} height={h}
+          stroke={el.color} strokeWidth={el.strokeWidth} fill="white" dash={dash} />
+        {lines}
+        {texts}
+      </Group>,
+      el, i,
+    );
+  }
+
   return null;
 }
 

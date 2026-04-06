@@ -1,6 +1,6 @@
 // Board component
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { Stage, Layer, Rect, Image as KonvaImage } from 'react-konva';
+import { Stage, Layer, Rect, Image as KonvaImage, Line as KonvaLine, Circle as KonvaCircle } from 'react-konva';
 import Konva from 'konva';
 import QRCode from 'qrcode';
 import {
@@ -36,6 +36,7 @@ import FramePanel from './FramePanel';
 import VoiceChat from './VoiceChat';
 import ShapeLibrary from './ShapeLibrary';
 import PresentationMode from './PresentationMode';
+import SearchPanel from './SearchPanel';
 
 const socket = io('http://localhost:3001');
 
@@ -57,7 +58,7 @@ const getCursorColor = (id: string) => {
   return CURSOR_COLORS[hash % CURSOR_COLORS.length];
 };
 
-const RESIZABLE_TOOLS = ['rect', 'circle', 'triangle', 'sticky', 'textbox', 'shape', 'frame', 'arrow', 'straight', 'image', 'pen', 'eraser'];
+const RESIZABLE_TOOLS = ['rect', 'circle', 'triangle', 'sticky', 'textbox', 'shape', 'frame', 'arrow', 'straight', 'image', 'pen', 'eraser', 'table'];
 const RESIZE_CURSORS: Record<string, string> = {
   'resize-nw': 'nwse-resize', 'resize-ne': 'nesw-resize',
   'resize-se': 'nwse-resize', 'resize-sw': 'nesw-resize',
@@ -87,6 +88,7 @@ export default function Board() {
     textAlign, setTextAlign,
     isSmoothing, setIsSmoothing, isSmoothingRef,
     isSmartShape, setIsSmartShape, isSmartShapeRef,
+    brushType, setBrushType,
     isEmojiMode, setIsEmojiMode,
     selectedEmoji, setSelectedEmoji,
     showEmojiPicker, setShowEmojiPicker,
@@ -146,6 +148,13 @@ export default function Board() {
   const [textInput, setTextInput] = useState<TextInputState | null>(null);
   const [, setImageLoadTick] = useState(0);
 
+  // ── 새 상태 ──
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const saveIndicatorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showSearch, setShowSearch] = useState(false);
+  const [snapLines, setSnapLines] = useState<{ type: 'x' | 'y'; pos: number }[]>([]);
+  const [tableCellEdit, setTableCellEdit] = useState<{ idx: number; row: number; col: number; value: string } | null>(null);
+
   // ── 협업 상태 ──
   const [users, setUsers] = useState<UserInfo[]>([]);
   const [followingUserId, setFollowingUserId] = useState<string | null>(null);
@@ -192,6 +201,15 @@ export default function Board() {
   const isResizingRef = useRef(false);
   const resizeHandleRef = useRef<ResizeHandle | null>(null);
   const resizeOriginalRef = useRef<{ el: DrawElement; bounds: Bounds; idx: number; startPos: { x: number; y: number } } | null>(null);
+
+  // ── 회전 refs ──
+  const isRotatingRef = useRef(false);
+  const rotateOriginRef = useRef<{ cx: number; cy: number; startAngle: number; origRotation: number; idx: number } | null>(null);
+
+  // ── 다중 리사이즈 refs ──
+  const isMultiResizingRef = useRef(false);
+  const multiResizeHandleRef = useRef<ResizeHandle | null>(null);
+  const multiResizeOriginRef = useRef<{ unionBounds: Bounds; origElements: { idx: number; el: DrawElement }[]; startPos: { x: number; y: number } } | null>(null);
 
   // ── 히스토리 훅 ──
   const { saveHistoryWith, handleUndo, handleRedo, historyRef, historyStepRef } = useHistory(
@@ -754,6 +772,79 @@ export default function Board() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── 자동 저장 인디케이터 ──
+  useEffect(() => {
+    if (elements.length === 0) return;
+    setSaveState('saving');
+    if (saveIndicatorTimer.current) clearTimeout(saveIndicatorTimer.current);
+    saveIndicatorTimer.current = setTimeout(() => {
+      setSaveState('saved');
+      saveIndicatorTimer.current = setTimeout(() => setSaveState('idle'), 3000);
+    }, 2000);
+  }, [elements]);
+
+  // ── 클립보드 이미지 붙여넣기 ──
+  useEffect(() => {
+    const handlePaste = async (e: ClipboardEvent) => {
+      if (!isJoined || isViewOnly) return;
+      const active = document.activeElement;
+      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          const blob = item.getAsFile();
+          if (!blob) continue;
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            const dataUrl = ev.target?.result as string;
+            if (!dataUrl) return;
+            const img = new window.Image();
+            img.src = dataUrl;
+            img.onload = () => {
+              imageCache.current.set(dataUrl, img);
+              const center = screenToCanvas(stageSize.width / 2, stageSize.height / 2);
+              const w = Math.min(img.naturalWidth, 600);
+              const h = (img.naturalHeight / img.naturalWidth) * w;
+              const newEl: DrawElement = {
+                id: generateId(), tool: 'image',
+                points: [center.x - w / 2, center.y - h / 2, w, h],
+                color: 'transparent', strokeWidth: 0,
+                imageDataUrl: dataUrl, opacity: currentOpacity,
+              };
+              setElements(prev => {
+                const updated = [...prev, newEl];
+                saveHistoryWith(updated);
+                socket.emit('update_element', newEl);
+                return updated;
+              });
+              setImageLoadTick(t => t + 1);
+              showToast('이미지가 붙여넣어졌습니다', 'info');
+            };
+          };
+          reader.readAsDataURL(blob);
+          break;
+        }
+      }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+   
+  }, [isJoined, isViewOnly, currentOpacity, screenToCanvas, stageSize, saveHistoryWith, showToast]);
+
+  // ── Ctrl+F 검색 단축키 ──
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault();
+        setShowSearch(v => !v);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   useKeyboardShortcuts({
     socket, elementsRef, selectedIndicesRef, showHelpRef, clipboard,
     setElements, setSelectedIndices, setTool, setShowHelp,
@@ -876,6 +967,29 @@ export default function Board() {
     setTextInput(null);
   };
 
+  // ── 테이블 셀 편집 커밋 ──
+  const commitTableCell = () => {
+    if (!tableCellEdit) return;
+    const { idx, row, col, value } = tableCellEdit;
+    setElements(prev => {
+      const upd = [...prev];
+      const el = upd[idx];
+      if (!el || el.tool !== 'table') return prev;
+      const rows = el.rows ?? 3;
+      const cols = el.cols ?? 3;
+      const newData: string[][] = Array.from({ length: rows }, (_, r) =>
+        Array.from({ length: cols }, (_, c) => el.tableData?.[r]?.[c] || '')
+      );
+      newData[row][col] = value;
+      const updated = { ...el, tableData: newData };
+      upd[idx] = updated;
+      saveHistoryWith(upd);
+      socket.emit('update_element', updated);
+      return upd;
+    });
+    setTableCellEdit(null);
+  };
+
   // ── 캔버스 이벤트 훅 ──
   const { handleMouseDown, handleMouseMove, handleMouseUp, handleDblClick } = useCanvasEvents({
     // Refs
@@ -884,14 +998,19 @@ export default function Board() {
     elementsRef, toolRef, isSmoothingRef, isSmartShapeRef, lastCursorEmit,
     lastPenTime, bezierPhase, bezierAnchor, connectorPhase, connectorFirst,
     isResizingRef, resizeHandleRef, resizeOriginalRef,
+    isRotatingRef, rotateOriginRef,
+    isMultiResizingRef, multiResizeHandleRef, multiResizeOriginRef,
     // State
     contextMenu, elements, selectedIndices, tool,
     isEmojiMode, selectedEmoji, nickname, isViewOnly,
     currentColor, strokeWidth, isFilled, currentDash, currentLineCap, currentOpacity, stickyBg,
     currentShapeName, gradientColors, gradientAngle,
+    brushType,
     // Setters
     setContextMenu, setEmojiReactions, setTextInput,
     setElements, setSelectedIndices, setBoxSelectRect, setStagePos,
+    setSnapLines,
+    setTableCellEdit,
     // Functions
     getCanvasPos, snap, commitText, saveHistoryWith, showToast,
     // Socket
@@ -1001,7 +1120,78 @@ export default function Board() {
               }}
             />
           ));
+
+          // 회전 핸들
+          const handleX = bx + bw / 2;
+          const handleY = by - 20 / stageScale;
+          resizeHandles.push(
+            <KonvaLine key="rotate-line"
+              points={[handleX, by, handleX, handleY]}
+              stroke="#3b82f6" strokeWidth={1 / stageScale} listening={false}
+            />,
+            <KonvaCircle key="rotate-handle"
+              name="rotate-handle"
+              x={handleX} y={handleY}
+              radius={5 / stageScale}
+              fill="white" stroke="#3b82f6" strokeWidth={1.5 / stageScale}
+              listening={true}
+              onMouseEnter={(e) => { const s = e.target.getStage(); if (s) s.container().style.cursor = 'crosshair'; }}
+              onMouseLeave={(e) => { const s = e.target.getStage(); if (s) s.container().style.cursor = ''; }}
+            />,
+          );
         }
+      }
+    }
+
+    // 다중 선택 리사이즈 핸들
+    if (selectedIndices.size > 1 && tool === 'select' && !isViewOnly) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      let hasValid = false;
+      [...selectedIndices].forEach(idx => {
+        if (idx >= elements.length) return;
+        const b = getElementBounds(elements[idx]);
+        if (b) {
+          hasValid = true;
+          minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+          maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
+        }
+      });
+      if (hasValid) {
+        const bx = minX - 4, by = minY - 4;
+        const bw = (maxX - minX) + 8, bh = (maxY - minY) + 8;
+        const hs = 8 / stageScale;
+        const mHandles = [
+          { name: 'multi-resize-nw', x: bx, y: by },
+          { name: 'multi-resize-n',  x: bx + bw / 2, y: by },
+          { name: 'multi-resize-ne', x: bx + bw, y: by },
+          { name: 'multi-resize-e',  x: bx + bw, y: by + bh / 2 },
+          { name: 'multi-resize-se', x: bx + bw, y: by + bh },
+          { name: 'multi-resize-s',  x: bx + bw / 2, y: by + bh },
+          { name: 'multi-resize-sw', x: bx, y: by + bh },
+          { name: 'multi-resize-w',  x: bx, y: by + bh / 2 },
+        ];
+        mHandles.forEach(h => {
+          resizeHandles.push(
+            <Rect
+              key={h.name}
+              name={h.name}
+              x={h.x - hs / 2} y={h.y - hs / 2}
+              width={hs} height={hs}
+              fill="white" stroke="#f59e0b"
+              strokeWidth={1.5 / stageScale}
+              cornerRadius={1.5 / stageScale}
+              listening={true}
+              onMouseEnter={(e) => {
+                const stage = e.target.getStage();
+                if (stage) stage.container().style.cursor = RESIZE_CURSORS[h.name.replace('multi-', '')] || 'default';
+              }}
+              onMouseLeave={(e) => {
+                const stage = e.target.getStage();
+                if (stage) stage.container().style.cursor = '';
+              }}
+            />,
+          );
+        });
       }
     }
 
@@ -1091,7 +1281,42 @@ export default function Board() {
         bgImageInputRef={bgImageInputRef}
         handleExportSVG={handleExportSVG}
         handleShowQRCode={handleShowQRCode}
+        brushType={brushType} setBrushType={setBrushType}
+        showSearch={showSearch} setShowSearch={setShowSearch}
       />
+
+      {/* 저장 인디케이터 */}
+      {saveState !== 'idle' && (
+        <div style={{
+          position: 'absolute', bottom: '20px', right: '320px', zIndex: 15,
+          padding: '4px 12px', borderRadius: '12px', fontSize: '12px', fontWeight: '500',
+          backgroundColor: saveState === 'saving' ? '#fef3c7' : '#d1fae5',
+          color: saveState === 'saving' ? '#92400e' : '#065f46',
+          border: `1px solid ${saveState === 'saving' ? '#fcd34d' : '#6ee7b7'}`,
+          pointerEvents: 'none',
+        }}>
+          {saveState === 'saving' ? '⏳ 저장 중...' : '✓ 저장됨'}
+        </div>
+      )}
+
+      {/* 검색 패널 */}
+      {showSearch && (
+        <SearchPanel
+          elements={elements}
+          theme={theme}
+          onNavigate={(el) => {
+            const b = getElementBounds(el);
+            if (!b) return;
+            const pad = 80;
+            const w = window.innerWidth, h = window.innerHeight;
+            const cw = b.width || 1, ch = b.height || 1;
+            const newScale = Math.min((w - pad * 2) / cw, (h - pad * 2) / ch, 4);
+            setStageScale(newScale);
+            setStagePos({ x: w / 2 - (b.x + cw / 2) * newScale, y: h / 2 - (b.y + ch / 2) * newScale });
+          }}
+          onClose={() => setShowSearch(false)}
+        />
+      )}
 
       {/* 줌 인디케이터 */}
       <div style={{ position:'absolute', bottom:'20px', left:'50%', transform:'translateX(-50%)', zIndex:10, display:'flex', alignItems:'center', gap:'8px', padding:'6px 14px', backgroundColor: theme.panel, borderRadius:'20px', boxShadow: theme.shadow, fontSize:'13px', color: theme.textMuted }}>
@@ -1398,6 +1623,16 @@ export default function Board() {
               listening={false}
             />
           )}
+          {snapLines.map((sl, i) => (
+            <KonvaLine key={`snap-${i}`}
+              points={sl.type === 'x'
+                ? [sl.pos, -10000, sl.pos, 10000]
+                : [-10000, sl.pos, 10000, sl.pos]}
+              stroke="#ef4444" strokeWidth={1 / stageScale}
+              dash={[4 / stageScale, 4 / stageScale]}
+              listening={false}
+            />
+          ))}
         </Layer>
       </Stage>
 
@@ -1447,6 +1682,45 @@ export default function Board() {
           onClose={() => setShowShapeLibrary(false)}
         />
       )}
+
+      {/* 테이블 셀 편집 오버레이 */}
+      {tableCellEdit !== null && (() => {
+        const el = elements[tableCellEdit.idx];
+        if (!el || el.tool !== 'table') return null;
+        const x = Math.min(el.points[0], el.points[2]);
+        const y = Math.min(el.points[1], el.points[3]);
+        const w = Math.abs(el.points[2] - el.points[0]);
+        const h = Math.abs(el.points[3] - el.points[1]);
+        const rows = el.rows ?? 3;
+        const cols = el.cols ?? 3;
+        const cellW = w / cols;
+        const cellH = h / rows;
+        const cellX = x + tableCellEdit.col * cellW + 4;
+        const cellY = y + tableCellEdit.row * cellH + 4;
+        const sc = canvasToScreen(cellX, cellY);
+        const scW = cellW * stageScale - 8;
+        const scH = cellH * stageScale - 8;
+        return (
+          <textarea
+            key="table-cell-edit"
+            autoFocus
+            value={tableCellEdit.value}
+            onChange={(e) => setTableCellEdit({ ...tableCellEdit, value: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitTableCell(); }
+              if (e.key === 'Escape') setTableCellEdit(null);
+            }}
+            onBlur={() => commitTableCell()}
+            style={{
+              position: 'absolute', left: sc.x, top: sc.y, zIndex: 20,
+              width: scW, height: scH,
+              background: 'white', border: '2px solid #3b82f6', outline: 'none',
+              resize: 'none', fontSize: `${(el.fontSize || 13) * stageScale}px`,
+              fontFamily: 'sans-serif', padding: '0', lineHeight: '1.4',
+            }}
+          />
+        );
+      })()}
 
       {/* 발표 모드 */}
       {isPresentingMode && (

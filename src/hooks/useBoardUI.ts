@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
-import type { ToolType, DashStyle, LineCapStyle } from '../utils/elementHelpers';
+import type { ToolType, DashStyle, LineCapStyle, BrushType } from '../utils/elementHelpers';
 import { generateId } from '../utils/elementHelpers';
 
 export interface Toast {
@@ -36,6 +36,7 @@ export function useBoardUI() {
   // ── 펜 옵션 ──
   const [isSmoothing, setIsSmoothing] = useState(false);
   const [isSmartShape, setIsSmartShape] = useState(false);
+  const [brushType, setBrushType] = useState<BrushType>('normal');
   const isSmoothingRef = useRef(false);
   const isSmartShapeRef = useRef(false);
 
@@ -126,6 +127,7 @@ export function useBoardUI() {
     // pen options
     isSmoothing, setIsSmoothing, isSmoothingRef,
     isSmartShape, setIsSmartShape, isSmartShapeRef,
+    brushType, setBrushType,
     // emoji
     isEmojiMode, setIsEmojiMode,
     selectedEmoji, setSelectedEmoji,

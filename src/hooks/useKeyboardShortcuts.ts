@@ -102,7 +102,7 @@ export function useKeyboardShortcuts({
         if (e.key === 'f' || e.key === 'F') { e.preventDefault(); handleZoomToFit(); return; }
         const map: Record<string, ToolType> = {
           p: 'pen', e: 'eraser', r: 'rect', c: 'circle',
-          t: 'text', l: 'straight', a: 'arrow', s: 'select', n: 'sticky', v: 'triangle',
+          t: 'text', l: 'straight', a: 'arrow', s: 'select', n: 'sticky', v: 'triangle', b: 'table',
         };
         if (map[e.key]) { setTool(map[e.key]); setSelectedIndices(new Set()); }
       }

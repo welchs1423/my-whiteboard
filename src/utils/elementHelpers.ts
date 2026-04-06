@@ -3,10 +3,11 @@
 export type ToolType =
   | 'pen' | 'eraser' | 'rect' | 'circle' | 'text'
   | 'arrow' | 'straight' | 'select' | 'sticky' | 'image' | 'triangle' | 'frame'
-  | 'bezier' | 'connector' | 'pin' | 'textbox' | 'shape';
+  | 'bezier' | 'connector' | 'pin' | 'textbox' | 'shape' | 'table';
 
 export type DashStyle = 'solid' | 'dashed' | 'dotted';
 export type LineCapStyle = 'round' | 'square' | 'butt';
+export type BrushType = 'normal' | 'marker' | 'highlighter' | 'airbrush';
 
 export interface DrawElement {
   id?: string;
@@ -42,6 +43,14 @@ export interface DrawElement {
   pinText?: string;
   // 도형 라이브러리
   shapeName?: string;
+  // 브러시 타입
+  brushType?: BrushType;
+  // 테이블
+  rows?: number;
+  cols?: number;
+  tableData?: string[][];
+  // 회전 (degrees)
+  rotation?: number;
 }
 
 export interface Bounds {
@@ -79,7 +88,7 @@ export function getElementBounds(el: DrawElement): Bounds | null {
     return { x: minX - pad, y: minY - pad, width: maxX - minX + pad * 2, height: maxY - minY + pad * 2 };
   }
 
-  if (['rect', 'circle', 'straight', 'arrow', 'sticky', 'triangle', 'frame', 'bezier', 'textbox', 'shape', 'connector'].includes(el.tool)) {
+  if (['rect', 'circle', 'straight', 'arrow', 'sticky', 'triangle', 'frame', 'bezier', 'textbox', 'shape', 'connector', 'table'].includes(el.tool)) {
     if (el.points.length < 4) return null;
     const x = Math.min(el.points[0], el.points[2]);
     const y = Math.min(el.points[1], el.points[3]);
@@ -163,7 +172,7 @@ export function resizeElementWithHandle(
 ): DrawElement {
   const pad = origEl.strokeWidth / 2 + 2;
 
-  if (['rect', 'circle', 'triangle', 'sticky', 'textbox', 'shape', 'frame', 'arrow', 'straight'].includes(origEl.tool)) {
+  if (['rect', 'circle', 'triangle', 'sticky', 'textbox', 'shape', 'frame', 'arrow', 'straight', 'table'].includes(origEl.tool)) {
     const rawLeft = origBounds.x + pad;
     const rawTop = origBounds.y + pad;
     const rawRight = origBounds.x + origBounds.width - pad;
