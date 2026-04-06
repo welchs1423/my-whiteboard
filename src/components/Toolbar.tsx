@@ -8,6 +8,7 @@ import {
   Waypoints, Workflow, MapPin, AlignLeft, AlignCenter, AlignRight,
   Presentation, Crosshair, QrCode, FileImage, Shapes, Bold, Italic, Underline,
   Search, Table2, Network, Sigma, LayoutTemplate, Keyboard, Timer,
+  Bot, Palette, Monitor, Code, ExternalLink,
 } from 'lucide-react';
 import type { ToolType, DashStyle, LineCapStyle, BrushType } from '../utils/elementHelpers';
 
@@ -115,6 +116,15 @@ export interface ToolbarProps {
   setShowTimer: React.Dispatch<React.SetStateAction<boolean>>;
   showHistoryDiff: boolean;
   setShowHistoryDiff: React.Dispatch<React.SetStateAction<boolean>>;
+  // AI 다이어그램
+  showAIDiagram: boolean;
+  setShowAIDiagram: React.Dispatch<React.SetStateAction<boolean>>;
+  // 테마 선택
+  showThemeSelector: boolean;
+  setShowThemeSelector: React.Dispatch<React.SetStateAction<boolean>>;
+  // 화면 공유
+  isScreenSharing: boolean;
+  startScreenShare: () => void;
 }
 
 export default function Toolbar({
@@ -154,6 +164,9 @@ export default function Toolbar({
   showShortcutSettings, setShowShortcutSettings,
   showTimer, setShowTimer,
   showHistoryDiff, setShowHistoryDiff,
+  showAIDiagram, setShowAIDiagram,
+  showThemeSelector, setShowThemeSelector,
+  isScreenSharing, startScreenShare,
 }: ToolbarProps) {
   const toolBtn = (active: boolean): React.CSSProperties => ({
     background: 'none', border: 'none', cursor: 'pointer',
@@ -293,6 +306,12 @@ export default function Toolbar({
             </button>
             <button onClick={() => setTool('formula')} title="수식 (LaTeX)" style={toolBtn(tool==='formula')}>
               <Sigma size={22}/>
+            </button>
+            <button onClick={() => setTool('code')} title="코드 블록" style={toolBtn(tool==='code')}>
+              <Code size={22}/>
+            </button>
+            <button onClick={() => setTool('iframe')} title="iframe 임베드" style={toolBtn(tool==='iframe')}>
+              <ExternalLink size={22}/>
             </button>
           </div>
         )}
@@ -439,6 +458,9 @@ export default function Toolbar({
               <button onClick={() => setShowShortcutSettings(v => !v)} title="단축키 설정" style={{ ...iconBtn, color: showShortcutSettings ? '#3b82f6' : '#9ca3af' }}><Keyboard size={22}/></button>
               <button onClick={() => setShowTimer(v => !v)} title="타이머" style={{ ...iconBtn, color: showTimer ? '#3b82f6' : '#9ca3af' }}><Timer size={22}/></button>
               <button onClick={() => setShowHistoryDiff(v => !v)} title="변경 이력" style={{ ...iconBtn, color: showHistoryDiff ? '#3b82f6' : '#9ca3af' }}>📜</button>
+              <button onClick={() => setShowAIDiagram(v => !v)} title="AI 다이어그램 생성" style={{ ...iconBtn, color: showAIDiagram ? '#8b5cf6' : '#9ca3af' }}><Bot size={22}/></button>
+              <button onClick={() => setShowThemeSelector(v => !v)} title="보드 색상 테마" style={{ ...iconBtn, color: showThemeSelector ? '#3b82f6' : '#9ca3af' }}><Palette size={22}/></button>
+              <button onClick={startScreenShare} title={isScreenSharing ? '화면 공유 중지' : '화면 공유'} style={{ ...iconBtn, color: isScreenSharing ? '#ef4444' : '#9ca3af' }}><Monitor size={22}/></button>
             </>
           )}
           <button onClick={() => setShowHelp(v => !v)} title="단축키 도움말 (?)" style={iconBtn}><HelpCircle size={22}/></button>

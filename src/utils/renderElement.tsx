@@ -250,6 +250,9 @@ export function renderElement(
               width={Math.min(txt.length * 7, 168)} />
           </>
         )}
+        {el.audioDataUrl && (
+          <Text x={px - 6} y={py - 28} text="🎙" fontSize={12} />
+        )}
       </Group>,
       el, i,
     );
@@ -278,6 +281,7 @@ export function renderElement(
     const y = Math.min(el.points[1], el.points[3]);
     const w = Math.max(80, Math.abs(el.points[2] - el.points[0]));
     const h = Math.max(60, Math.abs(el.points[3] - el.points[1]));
+    const voteCount = el.votes ? Object.values(el.votes).filter(Boolean).length : 0;
     return withRotation(
       <Group opacity={op}>
         <Rect x={x} y={y} width={w} height={h} fill={el.stickyBg || '#fef08a'}
@@ -286,6 +290,10 @@ export function renderElement(
         {el.text && (
           <Text x={x + 8} y={y + 8} text={el.text} width={w - 16}
             fontSize={el.fontSize || 14} fill="#1c1917" fontFamily="sans-serif" wrap="word" />
+        )}
+        {voteCount > 0 && (
+          <Text x={x + w - 36} y={y + h - 20} text={`👍 ${voteCount}`}
+            fontSize={11} fill="#92400e" fontFamily="sans-serif" />
         )}
       </Group>,
       el, i,
@@ -361,6 +369,31 @@ export function renderElement(
           stroke={el.color} strokeWidth={el.strokeWidth} fill="white" dash={dash} />
         {lines}
         {texts}
+      </Group>,
+      el, i,
+    );
+  }
+
+  // ── 코드 블록 ──
+  if (el.tool === 'code' && el.points.length >= 4) {
+    const x = Math.min(el.points[0], el.points[2]);
+    const y = Math.min(el.points[1], el.points[3]);
+    const w = Math.abs(el.points[2] - el.points[0]);
+    const h = Math.abs(el.points[3] - el.points[1]);
+    const lang = el.codeLanguage || 'code';
+    return withRotation(
+      <Group opacity={op}>
+        <Rect x={x} y={y} width={w} height={h} fill="#1e1e1e" cornerRadius={6}
+          stroke="#3d3d3d" strokeWidth={1} />
+        <Rect x={x} y={y} width={w} height={22} fill="#2d2d2d" cornerRadius={[6, 6, 0, 0]} />
+        <Text x={x + w - lang.length * 7 - 8} y={y + 5} text={lang}
+          fontSize={11} fill="#9ca3af" fontFamily="monospace" />
+        {el.text && (
+          <Text x={x + 8} y={y + 28} text={el.text}
+            width={w - 16} height={h - 36}
+            fontSize={el.fontSize || 13} fill="#d4d4d4"
+            fontFamily="monospace" wrap="word" lineHeight={1.5} />
+        )}
       </Group>,
       el, i,
     );

@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
+import type React from 'react';
 import type { ToolType, DashStyle, LineCapStyle, BrushType } from '../utils/elementHelpers';
 import { generateId } from '../utils/elementHelpers';
+import { BOARD_THEMES } from '../data/boardThemes';
 
 export interface Toast {
   id: string;
@@ -51,7 +53,7 @@ export function useBoardUI() {
   const [isSnapEnabled, setIsSnapEnabled] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [boardThemeId, setBoardThemeId] = useState('light');
   const [showShapeLibrary, setShowShapeLibrary] = useState(false);
   const [isLaserMode, setIsLaserMode] = useState(false);
   const [bgImageUrl, setBgImageUrl] = useState<string | null>(null);
@@ -61,25 +63,49 @@ export function useBoardUI() {
   const showHelpRef = useRef(false);
   const isSnapEnabledRef = useRef(false);
 
+  const isDarkMode = useMemo(() => ['dark', 'midnight'].includes(boardThemeId), [boardThemeId]);
+
+  const setIsDarkMode: React.Dispatch<React.SetStateAction<boolean>> = useCallback((v) => {
+    const current = ['dark', 'midnight'].includes(boardThemeId);
+    const newVal = typeof v === 'function' ? v(current) : v;
+    setBoardThemeId(prev => {
+      if (newVal && !['dark', 'midnight'].includes(prev)) return 'dark';
+      if (!newVal && ['dark', 'midnight'].includes(prev)) return 'light';
+      return prev;
+    });
+  }, [boardThemeId]) as React.Dispatch<React.SetStateAction<boolean>>;
+
   // ── 토스트 ──
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   // ── 테마 ──
-  const theme = useMemo(() => ({
-    bg: isDarkMode ? '#111827' : '#f9fafb',
-    panel: isDarkMode ? '#1f2937' : 'white',
-    border: isDarkMode ? '#374151' : '#e5e7eb',
-    text: isDarkMode ? '#f3f4f6' : '#374151',
-    textMuted: isDarkMode ? '#9ca3af' : '#6b7280',
-    textSubtle: isDarkMode ? '#6b7280' : '#9ca3af',
-    shadow: isDarkMode ? '0 4px 6px rgba(0,0,0,0.5)' : '0 4px 6px rgba(0,0,0,0.1)',
-    gridColor: isDarkMode ? '#374151' : '#c8cdd6',
-    inputBg: isDarkMode ? '#374151' : 'white',
-    inputBorder: isDarkMode ? '#4b5563' : '#d1d5db',
-    chatBubbleSelf: '#3b82f6',
-    chatBubbleOther: isDarkMode ? '#374151' : '#f3f4f6',
-    chatTextOther: isDarkMode ? '#f3f4f6' : '#374151',
-  }), [isDarkMode]);
+  const theme = useMemo(() => {
+    const t = BOARD_THEMES.find(bt => bt.id === boardThemeId);
+    if (t) {
+      return {
+        bg: t.bg, panel: t.panel, border: t.border,
+        text: t.text, textMuted: t.textMuted, textSubtle: t.textSubtle,
+        shadow: t.shadow, gridColor: t.gridColor,
+        inputBg: t.inputBg, inputBorder: t.inputBorder,
+        chatBubbleSelf: t.chatBubbleSelf, chatBubbleOther: t.chatBubbleOther, chatTextOther: t.chatTextOther,
+      };
+    }
+    return {
+      bg: isDarkMode ? '#111827' : '#f9fafb',
+      panel: isDarkMode ? '#1f2937' : 'white',
+      border: isDarkMode ? '#374151' : '#e5e7eb',
+      text: isDarkMode ? '#f3f4f6' : '#374151',
+      textMuted: isDarkMode ? '#9ca3af' : '#6b7280',
+      textSubtle: isDarkMode ? '#6b7280' : '#9ca3af',
+      shadow: isDarkMode ? '0 4px 6px rgba(0,0,0,0.5)' : '0 4px 6px rgba(0,0,0,0.1)',
+      gridColor: isDarkMode ? '#374151' : '#c8cdd6',
+      inputBg: isDarkMode ? '#374151' : 'white',
+      inputBorder: isDarkMode ? '#4b5563' : '#d1d5db',
+      chatBubbleSelf: '#3b82f6',
+      chatBubbleOther: isDarkMode ? '#374151' : '#f3f4f6',
+      chatTextOther: isDarkMode ? '#f3f4f6' : '#374151',
+    };
+  }, [isDarkMode, boardThemeId]);
 
   // ── Ref 동기화 ──
   useLayoutEffect(() => { toolRef.current = tool; }, [tool]);
@@ -145,6 +171,7 @@ export function useBoardUI() {
     isPresentingMode, setIsPresentingMode,
     presentingFrameIdx, setPresentingFrameIdx,
     showQRCode, setShowQRCode,
+    boardThemeId, setBoardThemeId,
     // toasts
     toasts, setToasts, showToast,
     // theme

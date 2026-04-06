@@ -72,9 +72,10 @@ const debouncedSave = (room) => {
 };
 
 io.on('connection', (socket) => {
-  socket.on('join_room', async ({ nickname, room }) => {
+  socket.on('join_room', async ({ nickname, room, isAnonymous }) => {
     socket.join(room);
-    users[socket.id] = { nickname, room };
+    const displayName = isAnonymous ? `익명${nickname.slice(2)}` : nickname;
+    users[socket.id] = { nickname: displayName, room, isAnonymous: !!isAnonymous };
     if (!roomElements[room]) {
       const savedData = await Board.findOne({ room });
       roomElements[room] = savedData ? savedData.elements : [];
@@ -236,6 +237,28 @@ io.on('connection', (socket) => {
     const user = users[socket.id];
     if (!user) return;
     socket.to(user.room).emit('timer_sync', timerState);
+  });
+
+  // ── 화면 공유 시그널링 ──
+  socket.on('screen_share_start', ({ room }) => {
+    const user = users[socket.id];
+    if (!user) return;
+    socket.to(room).emit('screen_share_started', { id: socket.id, nickname: user.nickname });
+  });
+  socket.on('screen_share_stop', ({ room }) => {
+    const user = users[socket.id];
+    if (!user) return;
+    socket.to(room).emit('screen_share_stopped', { id: socket.id });
+  });
+  socket.on('screen_offer', ({ to, offer }) => {
+    const user = users[socket.id];
+    io.to(to).emit('screen_offer', { from: socket.id, offer, nickname: user?.nickname });
+  });
+  socket.on('screen_answer', ({ to, answer }) => {
+    io.to(to).emit('screen_answer', { from: socket.id, answer });
+  });
+  socket.on('screen_ice', ({ to, candidate }) => {
+    io.to(to).emit('screen_ice', { from: socket.id, candidate });
   });
 
   socket.on('disconnect', () => {

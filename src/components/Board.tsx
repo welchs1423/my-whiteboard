@@ -26,6 +26,7 @@ import { useBoardUI } from '../hooks/useBoardUI';
 import { useViewport } from '../hooks/useViewport';
 import { useCanvasEvents } from '../hooks/useCanvasEvents';
 import { renderElement, renderMindmapNode, renderFormulaElement } from '../utils/renderElement';
+import { distributeHorizontally, distributeVertically, gridLayout } from '../utils/autoLayout';
 import LoginScreen from './LoginScreen';
 import HelpModal from './HelpModal';
 import Toolbar from './Toolbar';
@@ -41,6 +42,8 @@ import SearchPanel from './SearchPanel';
 import TemplateGallery from './TemplateGallery';
 import ShortcutSettings from './ShortcutSettings';
 import HistoryDiffPanel from './HistoryDiffPanel';
+import ThemeSelector from './ThemeSelector';
+import AIDiagramModal from './AIDiagramModal';
 
 const socket = io('http://localhost:3001');
 
@@ -62,7 +65,7 @@ const getCursorColor = (id: string) => {
   return CURSOR_COLORS[hash % CURSOR_COLORS.length];
 };
 
-const RESIZABLE_TOOLS = ['rect', 'circle', 'triangle', 'sticky', 'textbox', 'shape', 'frame', 'arrow', 'straight', 'image', 'pen', 'eraser', 'table', 'mindmap', 'formula'];
+const RESIZABLE_TOOLS = ['rect', 'circle', 'triangle', 'sticky', 'textbox', 'shape', 'frame', 'arrow', 'straight', 'image', 'pen', 'eraser', 'table', 'mindmap', 'formula', 'code', 'iframe'];
 const RESIZE_CURSORS: Record<string, string> = {
   'resize-nw': 'nwse-resize', 'resize-ne': 'nesw-resize',
   'resize-se': 'nwse-resize', 'resize-sw': 'nesw-resize',
@@ -109,6 +112,7 @@ export default function Board() {
     showQRCode, setShowQRCode,
     toasts, showToast,
     theme,
+    boardThemeId, setBoardThemeId,
   } = useBoardUI();
 
   // ── 뷰포트 훅 ──
@@ -202,6 +206,36 @@ export default function Board() {
 
   // ── Feature 7: History Diff ──
   const [showHistoryDiff, setShowHistoryDiff] = useState(false);
+
+  // ── New Features State ──
+  // Feature 1: AI Diagram
+  const [showAIDiagram, setShowAIDiagram] = useState(false);
+  // Feature 6: URL Link
+  const [showLinkModal, setShowLinkModal] = useState(false);
+  const [linkModalIdx, setLinkModalIdx] = useState<number | null>(null);
+  const [linkInput, setLinkInput] = useState('');
+  // Feature 7: iframe embed
+  const [showIframeInput, setShowIframeInput] = useState(false);
+  const [iframeInputValue, setIframeInputValue] = useState('');
+  const [pendingIframePos, setPendingIframePos] = useState<{ x: number; y: number } | null>(null);
+  // Feature 8: Code Editor
+  const [showCodeEditor, setShowCodeEditor] = useState(false);
+  const [codeEditorIdx, setCodeEditorIdx] = useState<number | null>(null);
+  const [codeEditorText, setCodeEditorText] = useState('');
+  const [codeEditorLang, setCodeEditorLang] = useState('javascript');
+  // Feature 5: Voice Memo
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  // Feature 4: Screen Share
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [screenShareStream, setScreenShareStream] = useState<MediaStream | null>(null);
+  const screenVideoRef = useRef<HTMLVideoElement>(null);
+  // Feature 2: OCR
+  const [isOCRProcessing, setIsOCRProcessing] = useState(false);
+  // Feature 10: Anonymous - handled in handleJoin via socket
+  // Feature 12: Theme Selector
+  const [showThemeSelector, setShowThemeSelector] = useState(false);
 
   // ── Formula cache ──
   const formulaCache = useRef<Map<string, HTMLImageElement>>(new Map());
@@ -370,7 +404,26 @@ export default function Board() {
     setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
   };
 
-  // ── 잠금/해제 ──
+  // ── 자동 레이아웃 (Feature 11) ──
+  const applyDistributeH = () => {
+    const idxs = [...selectedIndicesRef.current];
+    if (idxs.length < 3) return;
+    const upd = distributeHorizontally(elementsRef.current, idxs);
+    setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
+  };
+  const applyDistributeV = () => {
+    const idxs = [...selectedIndicesRef.current];
+    if (idxs.length < 3) return;
+    const upd = distributeVertically(elementsRef.current, idxs);
+    setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
+  };
+  const applyGridLayout = () => {
+    const idxs = [...selectedIndicesRef.current];
+    if (idxs.length < 2) return;
+    const cols = Math.ceil(Math.sqrt(idxs.length));
+    const upd = gridLayout(elementsRef.current, idxs, cols);
+    setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
+  };
   const toggleLock = () => {
     const idxs = [...selectedIndicesRef.current];
     if (idxs.length === 0) return;
@@ -997,6 +1050,27 @@ export default function Board() {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
+  // Feature 8: Auto-open code editor when new code element is created
+  useEffect(() => {
+    if (tool !== 'code') return;
+    const last = elements[elements.length - 1];
+    if (last?.tool === 'code' && !last.text) {
+      const idx = elements.length - 1;
+      setCodeEditorIdx(idx);
+      setCodeEditorText('');
+      setCodeEditorLang('javascript');
+      setShowCodeEditor(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [elements.length]);
+
+  // Feature 4: Update screen video src when stream changes
+  useEffect(() => {
+    if (screenVideoRef.current && screenShareStream) {
+      screenVideoRef.current.srcObject = screenShareStream;
+    }
+  }, [screenShareStream]);
+
   useEffect(() => {
     const el = stageRef.current?.container();
     if (!el) return;
@@ -1068,15 +1142,18 @@ export default function Board() {
   }, []);
 
   // ── 핸들러 ──
-  const handleJoin = (viewOnly = false) => {
+  const handleJoin = (viewOnly = false, anonymous = false) => {
     const name = viewOnly ? '관람자' : nickname.trim();
     if (!name || !roomId.trim()) return;
     if (viewOnly) {
       setNickname('관람자');
       setIsViewOnly(true);
     }
+    if (anonymous) {
+      // isAnonymous is sent to server, nickname already set by LoginScreen
+    }
     window.history.pushState({}, '', `?room=${roomId}`);
-    socket.emit('join_room', { nickname: name, room: roomId });
+    socket.emit('join_room', { nickname: name, room: roomId, isAnonymous: anonymous });
     setIsJoined(true);
   };
 
@@ -1103,6 +1180,196 @@ export default function Board() {
     historyRef.current = [[]]; historyStepRef.current = 0;
     socket.emit('clear_all');
   }, [historyRef, historyStepRef]);
+
+  // ── Feature 9: Sticky Vote ──
+  const handleVote = useCallback((idx: number) => {
+    const el = elementsRef.current[idx];
+    if (!el || el.tool !== 'sticky') return;
+    const socketId = socket.id ?? 'unknown';
+    const currentVotes = el.votes ?? {};
+    const newVotes = { ...currentVotes, [socketId]: !currentVotes[socketId] };
+    const updated = { ...el, votes: newVotes };
+    const upd = elementsRef.current.map((e, i) => i === idx ? updated : e);
+    setElements(upd);
+    saveHistoryWith(upd);
+    socket.emit('update_element', updated);
+  }, [elementsRef, setElements, saveHistoryWith]);
+
+  // ── Feature 6: URL Link ──
+  const openLinkModal = useCallback((idx: number) => {
+    setLinkModalIdx(idx);
+    setLinkInput(elementsRef.current[idx]?.linkUrl ?? '');
+    setShowLinkModal(true);
+  }, [elementsRef]);
+
+  const saveLinkModal = useCallback(() => {
+    if (linkModalIdx === null) return;
+    const upd = elementsRef.current.map((el, i) =>
+      i === linkModalIdx ? { ...el, linkUrl: linkInput || undefined } : el
+    );
+    setElements(upd);
+    saveHistoryWith(upd);
+    socket.emit('update_element', upd[linkModalIdx]);
+    setShowLinkModal(false);
+    setLinkModalIdx(null);
+  }, [linkModalIdx, linkInput, elementsRef, setElements, saveHistoryWith]);
+
+  // ── Feature 8: Code Editor ──
+  const openCodeEditor = useCallback((idx: number) => {
+    const el = elementsRef.current[idx];
+    if (!el) return;
+    setCodeEditorIdx(idx);
+    setCodeEditorText(el.text ?? '');
+    setCodeEditorLang(el.codeLanguage ?? 'javascript');
+    setShowCodeEditor(true);
+  }, [elementsRef]);
+
+  const saveCodeEditor = useCallback(() => {
+    if (codeEditorIdx === null) return;
+    const upd = elementsRef.current.map((el, i) =>
+      i === codeEditorIdx ? { ...el, text: codeEditorText, codeLanguage: codeEditorLang } : el
+    );
+    setElements(upd);
+    saveHistoryWith(upd);
+    socket.emit('update_element', upd[codeEditorIdx]);
+    setShowCodeEditor(false);
+    setCodeEditorIdx(null);
+  }, [codeEditorIdx, codeEditorText, codeEditorLang, elementsRef, setElements, saveHistoryWith]);
+
+  // ── Feature 5: Voice Memo ──
+  const startRecording = useCallback(async (idx: number) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      mr.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      mr.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        if (blob.size > 100 * 1024) { showToast('⚠️ 오디오가 너무 큽니다 (100KB 초과)', 'info'); return; }
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const dataUrl = ev.target?.result as string;
+          const upd = elementsRef.current.map((el, i) => i === idx ? { ...el, audioDataUrl: dataUrl } : el);
+          setElements(upd);
+          saveHistoryWith(upd);
+          socket.emit('update_element', upd[idx]);
+          showToast('🎙 음성 메모 저장됨', 'info');
+        };
+        reader.readAsDataURL(blob);
+      };
+      mr.start();
+      mediaRecorderRef.current = mr;
+      setIsRecording(true);
+    } catch {
+      showToast('마이크 접근 권한이 필요합니다', 'leave');
+    }
+  }, [elementsRef, setElements, saveHistoryWith, showToast]);
+
+  const stopRecording = useCallback(() => {
+    mediaRecorderRef.current?.stop();
+    mediaRecorderRef.current = null;
+    setIsRecording(false);
+  }, []);
+
+  const playAudio = useCallback((dataUrl: string) => {
+    const audio = new Audio(dataUrl);
+    audio.play().catch(() => showToast('오디오 재생 실패', 'leave'));
+  }, [showToast]);
+
+  // ── Feature 4: Screen Share ──
+  const startScreenShare = useCallback(async () => {
+    if (isScreenSharing) {
+      screenShareStream?.getTracks().forEach(t => t.stop());
+      setScreenShareStream(null);
+      setIsScreenSharing(false);
+      socket.emit('screen_share_stop', { room: roomId });
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      setScreenShareStream(stream);
+      setIsScreenSharing(true);
+      socket.emit('screen_share_start', { room: roomId });
+      if (screenVideoRef.current) {
+        screenVideoRef.current.srcObject = stream;
+        screenVideoRef.current.play();
+      }
+      stream.getTracks()[0].onended = () => {
+        setScreenShareStream(null);
+        setIsScreenSharing(false);
+        socket.emit('screen_share_stop', { room: roomId });
+      };
+    } catch {
+      showToast('화면 공유를 시작할 수 없습니다', 'leave');
+    }
+  }, [isScreenSharing, screenShareStream, roomId, showToast]);
+
+  // ── Feature 2: OCR ──
+  const handleOCR = useCallback(async () => {
+    const idx = [...selectedIndicesRef.current][0];
+    if (idx === undefined) return;
+    const el = elementsRef.current[idx];
+    if (!el || el.tool !== 'pen') return;
+    const b = getElementBounds(el);
+    if (!b || !stageRef.current) return;
+    try {
+      setIsOCRProcessing(true);
+      showToast('🔍 손글씨 인식 중...', 'info');
+      const { stageScale: sc, stagePos: sp } = { stageScale, stagePos };
+      const dataUrl = stageRef.current.toDataURL({
+        x: b.x * sc + sp.x, y: b.y * sc + sp.y,
+        width: b.width * sc, height: b.height * sc,
+        pixelRatio: 2,
+      });
+      // Dynamic import of Tesseract
+      const Tesseract = await import('tesseract.js');
+      const result = await Tesseract.default.recognize(dataUrl, 'kor+eng');
+      const text = result.data.text.trim();
+      if (text) {
+        const newEl: DrawElement = {
+          id: generateId(), tool: 'text',
+          points: [b.x, b.y + b.height + 10], color: currentColor,
+          strokeWidth, text, fontSize: Math.max(16, strokeWidth * 3),
+          opacity: currentOpacity,
+        };
+        const upd = [...elementsRef.current, newEl];
+        setElements(upd);
+        saveHistoryWith(upd);
+        socket.emit('update_element', newEl);
+        showToast(`📝 인식됨: "${text.slice(0, 30)}${text.length > 30 ? '...' : ''}"`, 'info');
+      } else {
+        showToast('텍스트를 인식하지 못했습니다', 'info');
+      }
+    } catch (err) {
+      console.error(err);
+      showToast('OCR 처리 실패. tesseract.js가 설치되어 있는지 확인하세요.', 'leave');
+    } finally {
+      setIsOCRProcessing(false);
+    }
+  }, [selectedIndicesRef, elementsRef, stageRef, stageScale, stagePos, currentColor, strokeWidth, currentOpacity, setElements, saveHistoryWith, showToast]);
+
+  // ── Feature 3: GIF Export ──
+  const handleGifExport = useCallback(async () => {
+    if (timelineEvents.length === 0) { showToast('타임라인 이벤트가 없습니다', 'info'); return; }
+    showToast('📸 프레임 캡처 중...', 'info');
+    const frames = timelineEvents.slice(-10);
+    const savedElements = [...elementsRef.current];
+    const a = document.createElement('a');
+    for (let i = 0; i < Math.min(frames.length, 5); i++) {
+      setElements(frames[i].snapshot as DrawElement[]);
+      await new Promise(r => setTimeout(r, 100));
+      if (stageRef.current) {
+        const uri = stageRef.current.toDataURL({ pixelRatio: 1 });
+        a.download = `frame-${i + 1}.png`;
+        a.href = uri;
+        a.click();
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+    setElements(savedElements);
+    showToast(`${Math.min(frames.length, 5)}개 프레임을 PNG로 저장했습니다`, 'info');
+  }, [timelineEvents, elementsRef, setElements, stageRef, showToast]);
 
   const commitText = () => {
     if (!textInput) return;
@@ -1229,7 +1496,7 @@ export default function Board() {
   }, [elementsRef, setElements, saveHistoryWith, renderFormulaToImage, currentOpacity]);
 
   // ── 캔버스 이벤트 훅 ──
-  const { handleMouseDown: _handleMouseDown, handleMouseMove, handleMouseUp: _handleMouseUp, handleDblClick } = useCanvasEvents({
+  const { handleMouseDown: _handleMouseDown, handleMouseMove, handleMouseUp: _handleMouseUp, handleDblClick: _handleDblClick } = useCanvasEvents({
     // Refs
     isDrawing, isPanning, panStart, spaceHeldRef, stagePosRef,
     isBoxSelecting, boxSelectStart, isDraggingSelected, dragStartPos, dragOriginals,
@@ -1310,6 +1577,33 @@ export default function Board() {
       }
     }
 
+    // iframe tool click (Feature 7)
+    if (tool === 'iframe' && !isViewOnly) {
+      const pos = getCanvasPos(stage);
+      if (pos) {
+        setPendingIframePos(pos);
+        setIframeInputValue('');
+        setShowIframeInput(true);
+        return;
+      }
+    }
+
+    // Ctrl+Click to open link (Feature 6)
+    if (tool === 'select' && e.evt.ctrlKey) {
+      const pos = getCanvasPos(stage);
+      if (pos) {
+        for (let i = elementsRef.current.length - 1; i >= 0; i--) {
+          const el = elementsRef.current[i];
+          const b = getElementBounds(el);
+          if (!b) continue;
+          if (pos.x >= b.x && pos.x <= b.x + b.width && pos.y >= b.y && pos.y <= b.y + b.height) {
+            if (el.linkUrl) { window.open(el.linkUrl, '_blank'); return; }
+            break;
+          }
+        }
+      }
+    }
+
     _handleMouseDown(e);
   }, [_handleMouseDown, tool, isViewOnly, isCropMode, selectedIndices, elementsRef, getCanvasPos, handleMindmapClick, handleFormulaCreate]);
 
@@ -1332,7 +1626,6 @@ export default function Board() {
     _handleMouseUp();
   }, [_handleMouseUp, isDraggingSelected, isResizingRef, isRotatingRef, selectedIndicesRef, elementsRef]);
 
-  // Wrap handleMouseMove for crop drag (Feature 1)
   const handleMouseMoveWrapped = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     if (isCropMode && cropHandleRef.current && cropOriginRef.current) {
       const stage = e.target.getStage();
@@ -1374,6 +1667,27 @@ export default function Board() {
     }
     handleMouseMove(e);
   }, [isCropMode, handleMouseMove, getCanvasPos, imageCache, selectedIndicesRef, setElements]);
+
+  // Wrap handleDblClick to handle code editor (Feature 8)
+  const handleDblClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    const stage = e.target.getStage();
+    if (stage) {
+      const pos = getCanvasPos(stage);
+      if (pos) {
+        for (let i = elementsRef.current.length - 1; i >= 0; i--) {
+          const el = elementsRef.current[i];
+          if (el.tool !== 'code') continue;
+          const b = getElementBounds(el);
+          if (!b) continue;
+          if (pos.x >= b.x && pos.x <= b.x + b.width && pos.y >= b.y && pos.y <= b.y + b.height) {
+            openCodeEditor(i);
+            return;
+          }
+        }
+      }
+    }
+    _handleDblClick(e);
+  }, [_handleDblClick, getCanvasPos, elementsRef, openCodeEditor]);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -1697,6 +2011,9 @@ export default function Board() {
         showShortcutSettings={showShortcutSettings} setShowShortcutSettings={setShowShortcutSettings}
         showTimer={showTimer} setShowTimer={setShowTimer}
         showHistoryDiff={showHistoryDiff} setShowHistoryDiff={setShowHistoryDiff}
+        showAIDiagram={showAIDiagram} setShowAIDiagram={setShowAIDiagram}
+        showThemeSelector={showThemeSelector} setShowThemeSelector={setShowThemeSelector}
+        isScreenSharing={isScreenSharing} startScreenShare={startScreenShare}
       />
 
       {/* 저장 인디케이터 */}
@@ -1770,6 +2087,14 @@ export default function Board() {
               <button onClick={() => alignElements('middleV')} title="중간(수직) 정렬" style={layerBtn()}><AlignCenterVertical size={18}/></button>
               <button onClick={() => alignElements('bottom')} title="아래 정렬" style={layerBtn()}><AlignEndVertical size={18}/></button>
               <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
+              {selectedIndices.size >= 3 && (
+                <>
+                  <button onClick={applyDistributeH} title="균등 분산 (수평)" style={layerBtn()}>⇔</button>
+                  <button onClick={applyDistributeV} title="균등 분산 (수직)" style={layerBtn()}>⇕</button>
+                </>
+              )}
+              <button onClick={applyGridLayout} title="격자 정렬" style={layerBtn()}>⊞</button>
+              <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
               <button onClick={handleGroup} title="그룹화 (Ctrl+G)" style={{ ...layerBtn(), color:'#f59e0b' }}><GroupIcon size={18}/></button>
             </>
           )}
@@ -1787,6 +2112,64 @@ export default function Board() {
             {[...selectedIndices].every(i => elements[i]?.locked) ? <Unlock size={18}/> : <Lock size={18}/>}
           </button>
           <button onClick={deleteSelected} title="삭제 (Del)" style={{ ...layerBtn(), color:'#ef4444' }}><Trash2 size={18}/></button>
+          {/* Feature 9: Sticky Vote */}
+          {selectedIndices.size === 1 && singleIdx !== null && elements[singleIdx]?.tool === 'sticky' && (
+            <>
+              <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
+              <button
+                onClick={() => singleIdx !== null && handleVote(singleIdx)}
+                style={{ padding:'2px 8px', borderRadius:'6px', fontSize:'12px', cursor:'pointer', border:`1px solid ${theme.border}`, background: (elements[singleIdx]?.votes?.[socket.id ?? '']) ? '#fef3c7' : 'none', color: theme.textMuted }}>
+                👍 {Object.values(elements[singleIdx]?.votes ?? {}).filter(Boolean).length}
+              </button>
+            </>
+          )}
+
+          {/* Feature 5: Voice Memo for Pin */}
+          {selectedIndices.size === 1 && singleIdx !== null && elements[singleIdx]?.tool === 'pin' && !isViewOnly && (
+            <>
+              <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
+              {!isRecording ? (
+                <button onClick={() => singleIdx !== null && startRecording(singleIdx)}
+                  style={{ padding:'2px 8px', borderRadius:'6px', fontSize:'12px', cursor:'pointer', border:`1px solid ${theme.border}`, background:'none', color: theme.textMuted }}>
+                  🎙 녹음
+                </button>
+              ) : (
+                <button onClick={stopRecording}
+                  style={{ padding:'2px 8px', borderRadius:'6px', fontSize:'12px', cursor:'pointer', border:'2px solid #ef4444', background:'#fee2e2', color:'#ef4444', fontWeight:'bold' }}>
+                  ⏹ 중지
+                </button>
+              )}
+              {elements[singleIdx]?.audioDataUrl && (
+                <button onClick={() => { const el = elements[singleIdx]; if (el?.audioDataUrl) playAudio(el.audioDataUrl); }}
+                  style={{ padding:'2px 8px', borderRadius:'6px', fontSize:'12px', cursor:'pointer', border:`1px solid ${theme.border}`, background:'none', color:'#22c55e' }}>
+                  ▶ 재생
+                </button>
+              )}
+            </>
+          )}
+
+          {/* Feature 2: OCR for pen */}
+          {selectedIndices.size === 1 && singleIdx !== null && elements[singleIdx]?.tool === 'pen' && !isViewOnly && (
+            <>
+              <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
+              <button onClick={handleOCR} disabled={isOCRProcessing}
+                style={{ padding:'2px 8px', borderRadius:'6px', fontSize:'12px', cursor: isOCRProcessing ? 'wait' : 'pointer', border:`1px solid ${theme.border}`, background:'none', color: theme.textMuted }}>
+                {isOCRProcessing ? '⏳ 인식 중...' : '🔍 손글씨 인식'}
+              </button>
+            </>
+          )}
+
+          {/* Feature 6: Link for any element */}
+          {selectedIndices.size === 1 && singleIdx !== null && !isViewOnly && (
+            <>
+              <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
+              <button onClick={() => singleIdx !== null && openLinkModal(singleIdx)}
+                style={{ padding:'2px 8px', borderRadius:'6px', fontSize:'12px', cursor:'pointer', border:`1px solid ${theme.border}`, background: elements[singleIdx]?.linkUrl ? '#eff6ff' : 'none', color: elements[singleIdx]?.linkUrl ? '#3b82f6' : theme.textMuted }}>
+                🔗 {elements[singleIdx]?.linkUrl ? '링크' : '링크 추가'}
+              </button>
+            </>
+          )}
+
           {/* Feature 1: Crop button for single image */}
           {selectedIndices.size === 1 && singleIdx !== null && elements[singleIdx]?.tool === 'image' && (
             <>
@@ -2047,6 +2430,21 @@ export default function Board() {
           <button onClick={() => { handleGroup(); setContextMenu(null); }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: theme.text }}>그룹화</button>
           <button onClick={() => { handleUngroup(); setContextMenu(null); }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: theme.text }}>그룹 해제</button>
           <button onClick={() => { toggleLock(); setContextMenu(null); }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: theme.text }}>잠금 / 해제</button>
+          {singleIdx !== null && (
+            <>
+              <div style={{ height: '1px', backgroundColor: theme.border, margin: '4px 0' }} />
+              <button onClick={() => { if (singleIdx !== null) openLinkModal(singleIdx); setContextMenu(null); }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: theme.text }}>🔗 링크 추가/편집</button>
+              {elements[singleIdx]?.linkUrl && (
+                <button onClick={() => {
+                  if (singleIdx !== null) {
+                    const upd = elements.map((el, i) => i === singleIdx ? { ...el, linkUrl: undefined } : el);
+                    setElements(upd); saveHistoryWith(upd); socket.emit('update_element', upd[singleIdx]);
+                  }
+                  setContextMenu(null);
+                }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: '#ef4444' }}>🗑 링크 제거</button>
+              )}
+            </>
+          )}
           <div style={{ height: '1px', backgroundColor: theme.border, margin: '4px 0' }} />
           <button onClick={() => { deleteSelected(); setContextMenu(null); }} style={{ background: 'none', border: 'none', padding: '8px 16px', textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: '#ef4444' }}>삭제 (Del)</button>
         </div>
@@ -2391,6 +2789,157 @@ export default function Board() {
           </div>
         );
       })}
+
+      {/* Feature 6: Link icon overlays on canvas elements */}
+      {elements.map((el, idx) => {
+        if (!el.linkUrl) return null;
+        const b = getElementBounds(el);
+        if (!b) return null;
+        const sc = canvasToScreen(b.x + b.width, b.y);
+        return (
+          <div key={`link-${idx}`} title={el.linkUrl} onClick={() => window.open(el.linkUrl, '_blank')}
+            style={{ position:'absolute', left: sc.x - 18, top: sc.y, zIndex:14, fontSize:'13px', cursor:'pointer', backgroundColor: '#3b82f6', color:'white', borderRadius:'4px', padding:'1px 4px', pointerEvents:'auto' }}>
+            🔗
+          </div>
+        );
+      })}
+
+      {/* Feature 7: iframe overlays */}
+      {elements.map((el, idx) => {
+        if (el.tool !== 'iframe' || !el.iframeSrc) return null;
+        const sc = canvasToScreen(el.points[0], el.points[1]);
+        const w = (el.points[2] || 400) * stageScale;
+        const h = (el.points[3] || 300) * stageScale;
+        const embedUrl = el.iframeSrc.replace('youtube.com/watch?v=', 'youtube.com/embed/');
+        return (
+          <div key={`iframe-${idx}`} style={{ position:'absolute', left: sc.x, top: sc.y, width: w, height: h, zIndex:12, border: `2px solid #3b82f6`, borderRadius:'6px', overflow:'hidden', backgroundColor:'#000' }}>
+            <button onClick={() => {
+              const upd = elements.filter((_, i) => i !== idx);
+              setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
+            }} style={{ position:'absolute', top:4, right:4, zIndex:20, background:'rgba(0,0,0,0.7)', border:'none', color:'white', cursor:'pointer', borderRadius:'4px', padding:'2px 6px', fontSize:'12px' }}>✕</button>
+            <iframe src={embedUrl} width="100%" height="100%" style={{ border:'none' }} allowFullScreen title={`iframe-${idx}`} />
+          </div>
+        );
+      })}
+
+      {/* Feature 4: Screen share video overlay */}
+      {isScreenSharing && screenShareStream && (
+        <div style={{ position:'fixed', bottom:80, right:20, zIndex:50, borderRadius:'8px', overflow:'hidden', border:'2px solid #ef4444', boxShadow:'0 4px 12px rgba(0,0,0,0.3)' }}>
+          <video ref={screenVideoRef} autoPlay muted style={{ width:'320px', height:'180px', display:'block' }} />
+          <div style={{ position:'absolute', top:4, left:4, fontSize:'11px', backgroundColor:'rgba(239,68,68,0.9)', color:'white', padding:'2px 6px', borderRadius:'4px' }}>📺 화면 공유 중</div>
+        </div>
+      )}
+
+      {/* Feature 6: Link Modal */}
+      {showLinkModal && (
+        <div style={{ position:'fixed', inset:0, zIndex:200, backgroundColor:'rgba(0,0,0,0.3)', display:'flex', alignItems:'center', justifyContent:'center' }}
+          onClick={() => setShowLinkModal(false)}>
+          <div style={{ backgroundColor: theme.panel, borderRadius:'12px', padding:'20px', width:'360px', boxShadow: theme.shadow, border:`1px solid ${theme.border}` }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize:'15px', fontWeight:'bold', color: theme.text, marginBottom:'12px' }}>🔗 URL 링크</div>
+            <input autoFocus value={linkInput} onChange={e => setLinkInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') saveLinkModal(); if (e.key === 'Escape') setShowLinkModal(false); }}
+              placeholder="https://..." style={{ width:'100%', padding:'8px', border:`1px solid ${theme.border}`, borderRadius:'6px', fontSize:'14px', outline:'none', boxSizing:'border-box', backgroundColor: theme.inputBg, color: theme.text }} />
+            <div style={{ display:'flex', gap:'8px', marginTop:'10px', justifyContent:'flex-end' }}>
+              <button onClick={() => setShowLinkModal(false)} style={{ padding:'6px 14px', borderRadius:'6px', border:`1px solid ${theme.border}`, background:'none', cursor:'pointer', color: theme.textMuted }}>취소</button>
+              <button onClick={saveLinkModal} style={{ padding:'6px 14px', borderRadius:'6px', border:'none', background:'#3b82f6', color:'white', cursor:'pointer', fontWeight:'bold' }}>저장</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Feature 7: iframe URL Input Modal */}
+      {showIframeInput && (
+        <div style={{ position:'fixed', inset:0, zIndex:200, backgroundColor:'rgba(0,0,0,0.3)', display:'flex', alignItems:'center', justifyContent:'center' }}
+          onClick={() => setShowIframeInput(false)}>
+          <div style={{ backgroundColor: theme.panel, borderRadius:'12px', padding:'20px', width:'400px', boxShadow: theme.shadow, border:`1px solid ${theme.border}` }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize:'15px', fontWeight:'bold', color: theme.text, marginBottom:'12px' }}>🌐 iframe 임베드 URL</div>
+            <input autoFocus value={iframeInputValue} onChange={e => setIframeInputValue(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && iframeInputValue && pendingIframePos) {
+                  const newEl: DrawElement = { id: generateId(), tool: 'iframe', points: [pendingIframePos.x - 200, pendingIframePos.y - 150, 400, 300], color: '#3b82f6', strokeWidth: 2, iframeSrc: iframeInputValue };
+                  const upd = [...elementsRef.current, newEl];
+                  setElements(upd); saveHistoryWith(upd); socket.emit('update_element', newEl);
+                  setShowIframeInput(false);
+                }
+                if (e.key === 'Escape') setShowIframeInput(false);
+              }}
+              placeholder="https://www.youtube.com/watch?v=..." style={{ width:'100%', padding:'8px', border:`1px solid ${theme.border}`, borderRadius:'6px', fontSize:'14px', outline:'none', boxSizing:'border-box', backgroundColor: theme.inputBg, color: theme.text }} />
+            <div style={{ fontSize:'11px', color: theme.textMuted, marginTop:'6px' }}>YouTube URL은 자동으로 임베드로 변환됩니다</div>
+            <div style={{ display:'flex', gap:'8px', marginTop:'10px', justifyContent:'flex-end' }}>
+              <button onClick={() => setShowIframeInput(false)} style={{ padding:'6px 14px', borderRadius:'6px', border:`1px solid ${theme.border}`, background:'none', cursor:'pointer', color: theme.textMuted }}>취소</button>
+              <button onClick={() => {
+                if (iframeInputValue && pendingIframePos) {
+                  const newEl: DrawElement = { id: generateId(), tool: 'iframe', points: [pendingIframePos.x - 200, pendingIframePos.y - 150, 400, 300], color: '#3b82f6', strokeWidth: 2, iframeSrc: iframeInputValue };
+                  const upd = [...elementsRef.current, newEl];
+                  setElements(upd); saveHistoryWith(upd); socket.emit('update_element', newEl);
+                  setShowIframeInput(false);
+                }
+              }} style={{ padding:'6px 14px', borderRadius:'6px', border:'none', background:'#3b82f6', color:'white', cursor:'pointer', fontWeight:'bold' }}>삽입</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Feature 8: Code Editor Modal */}
+      {showCodeEditor && codeEditorIdx !== null && (
+        <div style={{ position:'fixed', inset:0, zIndex:200, backgroundColor:'rgba(0,0,0,0.4)', display:'flex', alignItems:'center', justifyContent:'center' }}
+          onClick={() => { saveCodeEditor(); }}>
+          <div style={{ backgroundColor:'#1e1e1e', borderRadius:'12px', padding:'20px', width:'600px', maxWidth:'95vw', boxShadow:'0 8px 32px rgba(0,0,0,0.5)' }} onClick={e => e.stopPropagation()}>
+            <div style={{ display:'flex', gap:'8px', marginBottom:'12px', alignItems:'center' }}>
+              <span style={{ fontSize:'14px', fontWeight:'bold', color:'#d4d4d4' }}>{'</>'}  코드 편집</span>
+              <select value={codeEditorLang} onChange={e => setCodeEditorLang(e.target.value)}
+                style={{ marginLeft:'auto', padding:'4px 8px', borderRadius:'6px', border:'1px solid #3d3d3d', background:'#2d2d2d', color:'#d4d4d4', fontSize:'12px' }}>
+                {['javascript','typescript','python','html','css','json','java','cpp','go','rust','sql'].map(l => (
+                  <option key={l} value={l}>{l}</option>
+                ))}
+              </select>
+              <button onClick={() => setShowCodeEditor(false)} style={{ background:'none', border:'none', cursor:'pointer', color:'#9ca3af', fontSize:'16px' }}>✕</button>
+            </div>
+            <textarea value={codeEditorText} onChange={e => setCodeEditorText(e.target.value)}
+              autoFocus
+              style={{ width:'100%', height:'280px', padding:'12px', background:'#2d2d2d', color:'#d4d4d4', border:'1px solid #3d3d3d', borderRadius:'6px', fontSize:'13px', fontFamily:'monospace', outline:'none', resize:'vertical', boxSizing:'border-box', lineHeight:'1.5' }}
+              onKeyDown={e => { if (e.key === 'Escape') saveCodeEditor(); }}
+            />
+            <div style={{ display:'flex', gap:'8px', marginTop:'12px', justifyContent:'flex-end' }}>
+              <button onClick={() => setShowCodeEditor(false)} style={{ padding:'6px 14px', borderRadius:'6px', border:'1px solid #374151', background:'none', cursor:'pointer', color:'#9ca3af' }}>취소</button>
+              <button onClick={saveCodeEditor} style={{ padding:'6px 14px', borderRadius:'6px', border:'none', background:'#3b82f6', color:'white', cursor:'pointer', fontWeight:'bold' }}>저장</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Feature 1: AI Diagram Modal */}
+      {showAIDiagram && (
+        <AIDiagramModal
+          theme={{ ...theme, inputBg: theme.inputBg, inputBorder: theme.inputBorder }}
+          onGenerate={(els) => {
+            const upd = [...elementsRef.current, ...els];
+            setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
+            showToast(`✨ ${els.length}개 요소가 생성되었습니다`, 'info');
+          }}
+          onClose={() => setShowAIDiagram(false)}
+        />
+      )}
+
+      {/* Feature 12: Theme Selector */}
+      {showThemeSelector && (
+        <ThemeSelector
+          theme={theme}
+          boardThemeId={boardThemeId}
+          setBoardThemeId={setBoardThemeId}
+          onClose={() => setShowThemeSelector(false)}
+        />
+      )}
+
+      {/* Feature 3: GIF Export (in timeline area) */}
+      {showTimeline && (
+        <div style={{ position:'fixed', bottom:160, right:20, zIndex:20 }}>
+          <button onClick={handleGifExport} title="프레임 PNG로 내보내기"
+            style={{ padding:'6px 12px', borderRadius:'8px', border:`1px solid ${theme.border}`, background: theme.panel, color: theme.textMuted, cursor:'pointer', fontSize:'12px' }}>
+            📸 프레임 내보내기
+          </button>
+        </div>
+      )}
     </div>
   );
 }

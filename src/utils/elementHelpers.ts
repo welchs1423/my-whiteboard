@@ -4,7 +4,7 @@ export type ToolType =
   | 'pen' | 'eraser' | 'rect' | 'circle' | 'text'
   | 'arrow' | 'straight' | 'select' | 'sticky' | 'image' | 'triangle' | 'frame'
   | 'bezier' | 'connector' | 'pin' | 'textbox' | 'shape' | 'table'
-  | 'mindmap' | 'formula';
+  | 'mindmap' | 'formula' | 'iframe' | 'code';
 
 export type DashStyle = 'solid' | 'dashed' | 'dotted';
 export type LineCapStyle = 'round' | 'square' | 'butt';
@@ -65,6 +65,17 @@ export interface DrawElement {
   mindmapExpanded?: boolean;
   // 수식
   formulaLatex?: string;
+  // URL 링크
+  linkUrl?: string;
+  // 스티키 노트 투표 (socketId → voted)
+  votes?: Record<string, boolean>;
+  // 음성 메모 (base64 audio)
+  audioDataUrl?: string;
+  // iframe 임베드
+  iframeSrc?: string;
+  // 코드 블록
+  codeLanguage?: string;
+  codeTheme?: string;
 }
 
 export interface Bounds {
@@ -143,6 +154,18 @@ export function getElementBounds(el: DrawElement): Bounds | null {
     return { x: el.points[0], y: el.points[1], width: w, height: h };
   }
 
+  if (el.tool === 'iframe' && el.points.length >= 4) {
+    return { x: el.points[0], y: el.points[1], width: el.points[2] || 400, height: el.points[3] || 300 };
+  }
+
+  if (el.tool === 'code' && el.points.length >= 4) {
+    const x = Math.min(el.points[0], el.points[2]);
+    const y = Math.min(el.points[1], el.points[3]);
+    const w = Math.abs(el.points[2] - el.points[0]);
+    const h = Math.abs(el.points[3] - el.points[1]);
+    return { x: x - pad, y: y - pad, width: w + pad * 2, height: h + pad * 2 };
+  }
+
   return null;
 }
 
@@ -198,7 +221,7 @@ export function resizeElementWithHandle(
 ): DrawElement {
   const pad = origEl.strokeWidth / 2 + 2;
 
-  if (['rect', 'circle', 'triangle', 'sticky', 'textbox', 'shape', 'frame', 'arrow', 'straight', 'table'].includes(origEl.tool)) {
+  if (['rect', 'circle', 'triangle', 'sticky', 'textbox', 'shape', 'frame', 'arrow', 'straight', 'table', 'code'].includes(origEl.tool)) {
     const rawLeft = origBounds.x + pad;
     const rawTop = origBounds.y + pad;
     const rawRight = origBounds.x + origBounds.width - pad;
