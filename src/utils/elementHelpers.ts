@@ -3,7 +3,8 @@
 export type ToolType =
   | 'pen' | 'eraser' | 'rect' | 'circle' | 'text'
   | 'arrow' | 'straight' | 'select' | 'sticky' | 'image' | 'triangle' | 'frame'
-  | 'bezier' | 'connector' | 'pin' | 'textbox' | 'shape' | 'table';
+  | 'bezier' | 'connector' | 'pin' | 'textbox' | 'shape' | 'table'
+  | 'mindmap' | 'formula';
 
 export type DashStyle = 'solid' | 'dashed' | 'dotted';
 export type LineCapStyle = 'round' | 'square' | 'butt';
@@ -51,6 +52,19 @@ export interface DrawElement {
   tableData?: string[][];
   // 회전 (degrees)
   rotation?: number;
+  // 이미지 크롭
+  cropX?: number;
+  cropY?: number;
+  cropWidth?: number;
+  cropHeight?: number;
+  // 마인드맵
+  mindmapLabel?: string;
+  mindmapChildren?: string[];
+  mindmapParent?: string;
+  mindmapLevel?: number;
+  mindmapExpanded?: boolean;
+  // 수식
+  formulaLatex?: string;
 }
 
 export interface Bounds {
@@ -86,6 +100,18 @@ export function getElementBounds(el: DrawElement): Bounds | null {
       maxY = Math.max(maxY, el.points[i + 1]);
     }
     return { x: minX - pad, y: minY - pad, width: maxX - minX + pad * 2, height: maxY - minY + pad * 2 };
+  }
+
+  if (el.tool === 'mindmap' && el.points.length >= 2) {
+    const cx = el.points[0], cy = el.points[1];
+    const w = el.points[2] ?? 160, h = el.points[3] ?? 50;
+    return { x: cx - w / 2 - pad, y: cy - h / 2 - pad, width: w + pad * 2, height: h + pad * 2 };
+  }
+
+  if (el.tool === 'formula' && el.points.length >= 4) {
+    const x = el.points[0], y = el.points[1];
+    const w = el.points[2] || 300, h = el.points[3] || 100;
+    return { x: x - pad, y: y - pad, width: w + pad * 2, height: h + pad * 2 };
   }
 
   if (['rect', 'circle', 'straight', 'arrow', 'sticky', 'triangle', 'frame', 'bezier', 'textbox', 'shape', 'connector', 'table'].includes(el.tool)) {

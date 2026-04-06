@@ -7,7 +7,7 @@ import {
   Magnet, Sun, Moon, Triangle, Spline, Wand2, Layout,
   Waypoints, Workflow, MapPin, AlignLeft, AlignCenter, AlignRight,
   Presentation, Crosshair, QrCode, FileImage, Shapes, Bold, Italic, Underline,
-  Search, Table2,
+  Search, Table2, Network, Sigma, LayoutTemplate, Keyboard, Timer,
 } from 'lucide-react';
 import type { ToolType, DashStyle, LineCapStyle, BrushType } from '../utils/elementHelpers';
 
@@ -106,6 +106,15 @@ export interface ToolbarProps {
   // 검색
   showSearch: boolean;
   setShowSearch: React.Dispatch<React.SetStateAction<boolean>>;
+  // 신규 기능
+  showTemplateGallery: boolean;
+  setShowTemplateGallery: React.Dispatch<React.SetStateAction<boolean>>;
+  showShortcutSettings: boolean;
+  setShowShortcutSettings: React.Dispatch<React.SetStateAction<boolean>>;
+  showTimer: boolean;
+  setShowTimer: React.Dispatch<React.SetStateAction<boolean>>;
+  showHistoryDiff: boolean;
+  setShowHistoryDiff: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 export default function Toolbar({
@@ -141,6 +150,10 @@ export default function Toolbar({
   bgImageInputRef, handleExportSVG, handleShowQRCode,
   brushType, setBrushType,
   showSearch, setShowSearch,
+  showTemplateGallery, setShowTemplateGallery,
+  showShortcutSettings, setShowShortcutSettings,
+  showTimer, setShowTimer,
+  showHistoryDiff, setShowHistoryDiff,
 }: ToolbarProps) {
   const toolBtn = (active: boolean): React.CSSProperties => ({
     background: 'none', border: 'none', cursor: 'pointer',
@@ -274,6 +287,12 @@ export default function Toolbar({
             </button>
             <button onClick={() => setTool('table')} title="테이블 (B)" style={toolBtn(tool==='table')}>
               <Table2 size={22}/>
+            </button>
+            <button onClick={() => setTool('mindmap')} title="마인드맵 (M)" style={toolBtn(tool==='mindmap')}>
+              <Network size={22}/>
+            </button>
+            <button onClick={() => setTool('formula')} title="수식 (LaTeX)" style={toolBtn(tool==='formula')}>
+              <Sigma size={22}/>
             </button>
           </div>
         )}
@@ -416,6 +435,10 @@ export default function Toolbar({
               <button onClick={() => setShowTimeline(v => !v)} title="타임라인" style={{ ...iconBtn, color: showTimeline?'#6366f1':'#9ca3af' }}>&#9654;</button>
               <button onClick={handleClearAll} title="전체 지우기" style={{ ...iconBtn, color:'#ef4444' }}><Trash2 size={22}/></button>
               <button onClick={() => setShowSearch(v => !v)} title="검색 (Ctrl+F)" style={{ ...iconBtn, color: showSearch ? '#3b82f6' : '#9ca3af' }}><Search size={22}/></button>
+              <button onClick={() => setShowTemplateGallery(v => !v)} title="템플릿 갤러리" style={{ ...iconBtn, color: showTemplateGallery ? '#3b82f6' : '#9ca3af' }}><LayoutTemplate size={22}/></button>
+              <button onClick={() => setShowShortcutSettings(v => !v)} title="단축키 설정" style={{ ...iconBtn, color: showShortcutSettings ? '#3b82f6' : '#9ca3af' }}><Keyboard size={22}/></button>
+              <button onClick={() => setShowTimer(v => !v)} title="타이머" style={{ ...iconBtn, color: showTimer ? '#3b82f6' : '#9ca3af' }}><Timer size={22}/></button>
+              <button onClick={() => setShowHistoryDiff(v => !v)} title="변경 이력" style={{ ...iconBtn, color: showHistoryDiff ? '#3b82f6' : '#9ca3af' }}>📜</button>
             </>
           )}
           <button onClick={() => setShowHelp(v => !v)} title="단축키 도움말 (?)" style={iconBtn}><HelpCircle size={22}/></button>

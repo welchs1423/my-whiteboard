@@ -21,6 +21,7 @@ interface UseKeyboardShortcutsParams {
   handleGroup: () => void;
   handleUngroup: () => void;
   saveHistoryWith: (els: DrawElement[]) => void;
+  customShortcuts?: Record<string, string>;
 }
 
 export function useKeyboardShortcuts({
@@ -30,8 +31,12 @@ export function useKeyboardShortcuts({
   setStageScale, setStagePos,
   handleUndo, handleRedo, handleZoomToFit, handleGroup, handleUngroup,
   saveHistoryWith,
+  customShortcuts,
 }: UseKeyboardShortcutsParams) {
   useEffect(() => {
+    const sc = customShortcuts ?? {};
+    const key = (id: string, def: string) => sc[id] ?? def;
+
     const onKey = (e: KeyboardEvent) => {
       const active = document.activeElement;
       if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
@@ -99,10 +104,36 @@ export function useKeyboardShortcuts({
       if (e.key === '?') { setShowHelp((v) => !v); return; }
 
       if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        if (e.key === 'f' || e.key === 'F') { e.preventDefault(); handleZoomToFit(); return; }
+        const fKey = key('zoomFit', 'f');
+        if (e.key === fKey || e.key === fKey.toUpperCase()) { e.preventDefault(); handleZoomToFit(); return; }
+
+        // Zoom shortcuts
+        const zoomInKey = key('zoomIn', '=');
+        const zoomOutKey = key('zoomOut', '-');
+        if (e.key === zoomInKey || e.key === '+') {
+          e.preventDefault();
+          setStageScale(prev => Math.min(prev * 1.25, 10));
+          return;
+        }
+        if (e.key === zoomOutKey) {
+          e.preventDefault();
+          setStageScale(prev => Math.max(prev / 1.25, 0.05));
+          return;
+        }
+
         const map: Record<string, ToolType> = {
-          p: 'pen', e: 'eraser', r: 'rect', c: 'circle',
-          t: 'text', l: 'straight', a: 'arrow', s: 'select', n: 'sticky', v: 'triangle', b: 'table',
+          [key('pen','p')]: 'pen',
+          [key('eraser','e')]: 'eraser',
+          [key('rect','r')]: 'rect',
+          [key('circle','c')]: 'circle',
+          [key('text','t')]: 'text',
+          [key('straight','l')]: 'straight',
+          [key('arrow','a')]: 'arrow',
+          [key('select','s')]: 'select',
+          [key('sticky','n')]: 'sticky',
+          [key('triangle','v')]: 'triangle',
+          [key('table','b')]: 'table',
+          [key('mindmap','m')]: 'mindmap',
         };
         if (map[e.key]) { setTool(map[e.key]); setSelectedIndices(new Set()); }
       }
@@ -121,5 +152,5 @@ export function useKeyboardShortcuts({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [customShortcuts]);
 }

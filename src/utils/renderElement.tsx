@@ -1,6 +1,7 @@
 import { cloneElement } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import type { MutableRefObject } from 'react';
+import React from 'react';
 import { Line, Rect, Ellipse, Text, Arrow, Image as KonvaImage, Group, Path } from 'react-konva';
 import type { DrawElement } from './elementHelpers';
 import { getDashArray, getElementBounds } from './elementHelpers';
@@ -293,10 +294,13 @@ export function renderElement(
   if (el.tool === 'image' && el.imageDataUrl) {
     const img = imageCache.current.get(el.imageDataUrl);
     if (!img) return null;
+    const cropProps = (el.cropX !== undefined && el.cropY !== undefined && el.cropWidth && el.cropHeight)
+      ? { crop: { x: el.cropX, y: el.cropY, width: el.cropWidth, height: el.cropHeight } }
+      : {};
     return withRotation(
       <KonvaImage image={img} x={el.points[0]} y={el.points[1]}
         width={el.points[2] || img.naturalWidth} height={el.points[3] || img.naturalHeight}
-        opacity={op} />,
+        opacity={op} {...cropProps} />,
       el, i,
     );
   }
@@ -363,5 +367,44 @@ export function renderElement(
   }
 
   return null;
+}
+
+// ── 마인드맵 노드 렌더링 ──
+export function renderMindmapNode(el: DrawElement, i: number, stageScale: number): React.ReactNode {
+  if (el.tool !== 'mindmap' || el.points.length < 2) return null;
+  const cx = el.points[0], cy = el.points[1];
+  const w = el.points[2] ?? 160, h = el.points[3] ?? 50;
+  const level = el.mindmapLevel ?? 0;
+  const colors = ['#8b5cf6', '#3b82f6', '#22c55e', '#6b7280'];
+  const bgColor = colors[Math.min(level, 3)];
+  const label = el.mindmapLabel || 'Node';
+  const op = el.opacity ?? 1;
+  return (
+    <Group key={`mm-${i}`} opacity={op}>
+      <Rect x={cx - w/2} y={cy - h/2} width={w} height={h}
+        fill={bgColor} cornerRadius={h/2}
+        stroke="white" strokeWidth={2/stageScale} />
+      <Text x={cx - w/2 + 8} y={cy - h/2 + 6} text={label}
+        width={w - 16} height={h - 12}
+        fontSize={14/stageScale * stageScale} fill="white"
+        fontFamily="sans-serif" align="center" verticalAlign="middle" />
+    </Group>
+  );
+}
+
+// ── 수식 이미지 렌더링 ──
+export function renderFormulaElement(el: DrawElement, i: number, formulaCache: React.MutableRefObject<Map<string, HTMLImageElement>>): React.ReactNode {
+  if (el.tool !== 'formula' || !el.formulaLatex) return null;
+  const img = formulaCache.current.get(el.formulaLatex);
+  if (!img) return null;
+  const op = el.opacity ?? 1;
+  return (
+    <KonvaImage key={`formula-${i}`}
+      image={img}
+      x={el.points[0]} y={el.points[1]}
+      width={el.points[2] || 300}
+      height={el.points[3] || 100}
+      opacity={op} />
+  );
 }
 

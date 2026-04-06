@@ -1,8 +1,9 @@
 // Board component
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { Stage, Layer, Rect, Image as KonvaImage, Line as KonvaLine, Circle as KonvaCircle } from 'react-konva';
+import { Stage, Layer, Rect, Image as KonvaImage, Line as KonvaLine, Circle as KonvaCircle, Arrow as KonvaArrow } from 'react-konva';
 import Konva from 'konva';
 import QRCode from 'qrcode';
+import katex from 'katex';
 import {
   Users, ChevronDown,
   ChevronsUp, ChevronUp, ChevronsDown, ZoomIn, ZoomOut, Copy,
@@ -24,7 +25,7 @@ import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { useBoardUI } from '../hooks/useBoardUI';
 import { useViewport } from '../hooks/useViewport';
 import { useCanvasEvents } from '../hooks/useCanvasEvents';
-import { renderElement } from '../utils/renderElement';
+import { renderElement, renderMindmapNode, renderFormulaElement } from '../utils/renderElement';
 import LoginScreen from './LoginScreen';
 import HelpModal from './HelpModal';
 import Toolbar from './Toolbar';
@@ -37,6 +38,9 @@ import VoiceChat from './VoiceChat';
 import ShapeLibrary from './ShapeLibrary';
 import PresentationMode from './PresentationMode';
 import SearchPanel from './SearchPanel';
+import TemplateGallery from './TemplateGallery';
+import ShortcutSettings from './ShortcutSettings';
+import HistoryDiffPanel from './HistoryDiffPanel';
 
 const socket = io('http://localhost:3001');
 
@@ -58,7 +62,7 @@ const getCursorColor = (id: string) => {
   return CURSOR_COLORS[hash % CURSOR_COLORS.length];
 };
 
-const RESIZABLE_TOOLS = ['rect', 'circle', 'triangle', 'sticky', 'textbox', 'shape', 'frame', 'arrow', 'straight', 'image', 'pen', 'eraser', 'table'];
+const RESIZABLE_TOOLS = ['rect', 'circle', 'triangle', 'sticky', 'textbox', 'shape', 'frame', 'arrow', 'straight', 'image', 'pen', 'eraser', 'table', 'mindmap', 'formula'];
 const RESIZE_CURSORS: Record<string, string> = {
   'resize-nw': 'nwse-resize', 'resize-ne': 'nesw-resize',
   'resize-se': 'nwse-resize', 'resize-sw': 'nesw-resize',
@@ -154,6 +158,53 @@ export default function Board() {
   const [showSearch, setShowSearch] = useState(false);
   const [snapLines, setSnapLines] = useState<{ type: 'x' | 'y'; pos: number }[]>([]);
   const [tableCellEdit, setTableCellEdit] = useState<{ idx: number; row: number; col: number; value: string } | null>(null);
+
+  // ── Feature 8: Zoom slider (uses stageScale from viewport hook) ──
+
+  // ── Feature 9: Template Gallery ──
+  const [showTemplateGallery, setShowTemplateGallery] = useState(false);
+
+  // ── Feature 10: Shortcut Settings ──
+  const [showShortcutSettings, setShowShortcutSettings] = useState(false);
+  const [customShortcuts, setCustomShortcuts] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem('whiteboard-shortcuts');
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  });
+
+  // ── Feature 11: Bulk Color Change ──
+  const [bulkColor, setBulkColor] = useState('#000000');
+
+  // ── Feature 12: Timer Widget ──
+  const [showTimer, setShowTimer] = useState(false);
+  const [timerState, setTimerState] = useState({
+    mode: 'down' as 'up' | 'down',
+    seconds: 0,
+    targetSeconds: 300,
+    isRunning: false,
+  });
+  const timerDragStart = useRef<{ mx: number; my: number; sx: number; sy: number } | null>(null);
+  const [timerPosState, setTimerPosState] = useState({ x: 20, y: 200 });
+
+  // ── Feature 5: Cursor DM ──
+  const [dmTarget, setDmTarget] = useState<{ userId: string; nickname: string } | null>(null);
+  const [dmInput, setDmInput] = useState('');
+  const [dmToastList, setDmToastList] = useState<{ id: string; from: string; text: string }[]>([]);
+
+  // ── Feature 6: Edit Indicators ──
+  const [editingIndicators, setEditingIndicators] = useState<Record<string, { nickname: string; color: string }>>({});
+
+  // ── Feature 1: Image Crop Mode ──
+  const [isCropMode, setIsCropMode] = useState(false);
+  const cropHandleRef = useRef<string | null>(null);
+  const cropOriginRef = useRef<{ startPos: { x: number; y: number }; origEl: DrawElement } | null>(null);
+
+  // ── Feature 7: History Diff ──
+  const [showHistoryDiff, setShowHistoryDiff] = useState(false);
+
+  // ── Formula cache ──
+  const formulaCache = useRef<Map<string, HTMLImageElement>>(new Map());
 
   // ── 협업 상태 ──
   const [users, setUsers] = useState<UserInfo[]>([]);
@@ -851,6 +902,7 @@ export default function Board() {
     setStageScale, setStagePos,
     handleUndo, handleRedo, handleZoomToFit, handleGroup, handleUngroup,
     saveHistoryWith,
+    customShortcuts,
   });
 
   useSocketEvents({
@@ -867,6 +919,81 @@ export default function Board() {
       if (frame) handleNavigateToFrame(frame);
     },
   });
+
+  // ── Feature 5: DM 수신 ──
+  useEffect(() => {
+    const onDM = (data: { from: string; text: string }) => {
+      const id = generateId();
+      setDmToastList(prev => [...prev, { id, from: data.from, text: data.text }]);
+      setTimeout(() => setDmToastList(prev => prev.filter(t => t.id !== id)), 5000);
+    };
+    socket.on('receive_dm', onDM);
+    return () => { socket.off('receive_dm', onDM); };
+  }, []);
+
+  // ── Feature 6: 편집 중 표시 ──
+  useEffect(() => {
+    const onStart = (data: { elementId: string; nickname: string; color: string }) => {
+      setEditingIndicators(prev => ({ ...prev, [data.elementId]: { nickname: data.nickname, color: data.color } }));
+    };
+    const onStop = (data: { elementId: string }) => {
+      setEditingIndicators(prev => { const next = { ...prev }; delete next[data.elementId]; return next; });
+    };
+    socket.on('element_editing', onStart);
+    socket.on('element_edit_stop', onStop);
+    return () => { socket.off('element_editing', onStart); socket.off('element_edit_stop', onStop); };
+  }, []);
+
+  // ── Feature 12: Timer sync ──
+  useEffect(() => {
+    const onSync = (state: typeof timerState) => setTimerState(state);
+    socket.on('timer_sync', onSync);
+    return () => { socket.off('timer_sync', onSync); };
+  }, []);
+
+  // ── Feature 12: Timer interval ──
+  useEffect(() => {
+    if (!timerState.isRunning) return;
+    const id = setInterval(() => {
+      setTimerState(prev => {
+        if (!prev.isRunning) return prev;
+        if (prev.mode === 'up') {
+          return { ...prev, seconds: prev.seconds + 1 };
+        } else {
+          if (prev.seconds <= 0) {
+            clearInterval(id);
+            showToast('⏰ 타이머 종료!', 'info');
+            return { ...prev, seconds: 0, isRunning: false };
+          }
+          return { ...prev, seconds: prev.seconds - 1 };
+        }
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [timerState.isRunning, timerState.mode, showToast]);
+
+  // ── Formula rendering ──
+  const renderFormulaToImage = useCallback(async (latex: string): Promise<HTMLImageElement> => {
+    const html = katex.renderToString(latex, { throwOnError: false, displayMode: true });
+    const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="100"><foreignObject width="300" height="100"><div xmlns="http://www.w3.org/1999/xhtml" style="padding:8px;background:white;">${html}</div></foreignObject></svg>`;
+    const blob = new Blob([svgStr], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    return new Promise(resolve => {
+      const img = new window.Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.src = url;
+    });
+  }, []);
+
+  useEffect(() => {
+    const formulaEls = elements.filter(el => el.tool === 'formula' && el.formulaLatex && !formulaCache.current.has(el.formulaLatex));
+    formulaEls.forEach(async (el) => {
+      if (!el.formulaLatex) return;
+      const img = await renderFormulaToImage(el.formulaLatex);
+      formulaCache.current.set(el.formulaLatex, img);
+      setImageLoadTick(t => t + 1);
+    });
+  }, [elements, renderFormulaToImage]);
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
@@ -892,6 +1019,53 @@ export default function Board() {
     return () => el.removeEventListener('wheel', onWheel);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isJoined]);
+
+  // ── Feature 4: Touch / Pinch-to-Zoom ──
+  const lastTouchDist = useRef(0);
+  const lastTouchCenter = useRef<{ x: number; y: number } | null>(null);
+  const touchPanStart = useRef<{ mx: number; my: number; sx: number; sy: number } | null>(null);
+
+  const handleTouchStart = useCallback((e: TouchEvent) => {
+    if (e.touches.length === 2) {
+      const t0 = e.touches[0], t1 = e.touches[1];
+      lastTouchDist.current = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+      lastTouchCenter.current = { x: (t0.clientX + t1.clientX) / 2, y: (t0.clientY + t1.clientY) / 2 };
+      touchPanStart.current = null;
+    } else if (e.touches.length === 1) {
+      touchPanStart.current = { mx: e.touches[0].clientX, my: e.touches[0].clientY, sx: stagePosRef.current.x, sy: stagePosRef.current.y };
+      lastTouchDist.current = 0;
+      lastTouchCenter.current = null;
+    }
+  }, [stagePosRef]);
+
+  const handleTouchMove = useCallback((e: TouchEvent) => {
+    e.preventDefault();
+    if (e.touches.length === 2) {
+      const t0 = e.touches[0], t1 = e.touches[1];
+      const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+      const center = { x: (t0.clientX + t1.clientX) / 2, y: (t0.clientY + t1.clientY) / 2 };
+      if (lastTouchDist.current > 0) {
+        const scaleFactor = dist / lastTouchDist.current;
+        const oldScale = stageScaleRef.current;
+        const newScale = Math.max(0.05, Math.min(10, oldScale * scaleFactor));
+        const origin = { x: (center.x - stagePosRef.current.x) / oldScale, y: (center.y - stagePosRef.current.y) / oldScale };
+        setStageScale(newScale);
+        setStagePos({ x: center.x - origin.x * newScale, y: center.y - origin.y * newScale });
+      }
+      lastTouchDist.current = dist;
+      lastTouchCenter.current = center;
+    } else if (e.touches.length === 1 && touchPanStart.current) {
+      const dx = e.touches[0].clientX - touchPanStart.current.mx;
+      const dy = e.touches[0].clientY - touchPanStart.current.my;
+      setStagePos({ x: touchPanStart.current.sx + dx, y: touchPanStart.current.sy + dy });
+    }
+  }, [stageScaleRef, stagePosRef, setStageScale, setStagePos]);
+
+  const handleTouchEnd = useCallback(() => {
+    lastTouchDist.current = 0;
+    lastTouchCenter.current = null;
+    touchPanStart.current = null;
+  }, []);
 
   // ── 핸들러 ──
   const handleJoin = (viewOnly = false) => {
@@ -990,8 +1164,72 @@ export default function Board() {
     setTableCellEdit(null);
   };
 
+  // ── Feature 2: Mindmap creation handler ──
+  const handleMindmapClick = useCallback((x: number, y: number) => {
+    // Check if clicking on existing mindmap node
+    let clickedIdx = -1;
+    for (let i = elementsRef.current.length - 1; i >= 0; i--) {
+      const elem = elementsRef.current[i];
+      if (elem.tool !== 'mindmap') continue;
+      const cx = elem.points[0], cy = elem.points[1];
+      const w = elem.points[2] ?? 160, h = elem.points[3] ?? 50;
+      if (Math.abs(x - cx) <= w / 2 && Math.abs(y - cy) <= h / 2) { clickedIdx = i; break; }
+    }
+    if (clickedIdx >= 0) {
+      // Create child node
+      const parent = elementsRef.current[clickedIdx];
+      const level = (parent.mindmapLevel ?? 0) + 1;
+      const childCount = (parent.mindmapChildren ?? []).length;
+      const childId = generateId();
+      const childNode: DrawElement = {
+        id: childId, tool: 'mindmap',
+        points: [parent.points[0] + 250, parent.points[1] + (childCount - 0.5) * 80, 130, 44],
+        color: '#3b82f6', strokeWidth: 2,
+        mindmapLabel: '새 노드', mindmapLevel: level,
+        mindmapParent: parent.id,
+      };
+      const updParent = { ...parent, mindmapChildren: [...(parent.mindmapChildren ?? []), childId] };
+      const upd = elementsRef.current.map((el, i) => i === clickedIdx ? updParent : el);
+      const final = [...upd, childNode];
+      setElements(final);
+      saveHistoryWith(final);
+      socket.emit('draw_line', final);
+    } else {
+      // Create root node
+      const newNode: DrawElement = {
+        id: generateId(), tool: 'mindmap',
+        points: [x, y, 160, 50],
+        color: '#8b5cf6', strokeWidth: 2,
+        mindmapLabel: '중심 주제', mindmapLevel: 0,
+      };
+      const upd = [...elementsRef.current, newNode];
+      setElements(upd);
+      saveHistoryWith(upd);
+      socket.emit('update_element', newNode);
+    }
+  }, [elementsRef, setElements, saveHistoryWith]);
+
+  // ── Feature 3: Formula creation handler ──
+  const handleFormulaCreate = useCallback(async (x: number, y: number) => {
+    const latex = window.prompt('LaTeX 수식을 입력하세요:', '\\frac{a}{b} = \\sqrt{c^2}');
+    if (!latex) return;
+    const img = await renderFormulaToImage(latex);
+    formulaCache.current.set(latex, img);
+    const newEl: DrawElement = {
+      id: generateId(), tool: 'formula',
+      points: [x, y, 300, 100],
+      color: '#000000', strokeWidth: 1,
+      formulaLatex: latex, opacity: currentOpacity,
+    };
+    const upd = [...elementsRef.current, newEl];
+    setElements(upd);
+    saveHistoryWith(upd);
+    socket.emit('update_element', newEl);
+    setImageLoadTick(t => t + 1);
+  }, [elementsRef, setElements, saveHistoryWith, renderFormulaToImage, currentOpacity]);
+
   // ── 캔버스 이벤트 훅 ──
-  const { handleMouseDown, handleMouseMove, handleMouseUp, handleDblClick } = useCanvasEvents({
+  const { handleMouseDown: _handleMouseDown, handleMouseMove, handleMouseUp: _handleMouseUp, handleDblClick } = useCanvasEvents({
     // Refs
     isDrawing, isPanning, panStart, spaceHeldRef, stagePosRef,
     isBoxSelecting, boxSelectStart, isDraggingSelected, dragStartPos, dragOriginals,
@@ -1016,6 +1254,126 @@ export default function Board() {
     // Socket
     socket,
   });
+
+  // Wrap mouseDown to handle mindmap/formula tools and crop mode and element_editing emit
+  const handleMouseDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    const stage = e.target.getStage();
+    if (!stage) return;
+
+    // Crop handle logic (Feature 1)
+    if (isCropMode) {
+      const name = e.target.name();
+      if (name.startsWith('crop-')) {
+        cropHandleRef.current = name;
+        const pos = getCanvasPos(stage);
+        if (!pos) return;
+        const idx = [...selectedIndices][0];
+        if (idx === undefined) return;
+        cropOriginRef.current = { startPos: pos, origEl: { ...elementsRef.current[idx] } };
+        return;
+      }
+      if (e.target === stage || !(e.target.name() ?? '').includes('crop')) {
+        setIsCropMode(false);
+        cropHandleRef.current = null;
+        cropOriginRef.current = null;
+      }
+      return;
+    }
+
+    // Feature 6: emit element_editing when starting drag on selected element
+    if (tool === 'select' && selectedIndices.size > 0) {
+      const targetName = e.target.name?.() ?? '';
+      if (!targetName.startsWith('resize-') && !targetName.startsWith('multi-') && !targetName.includes('rotate')) {
+        const idx = [...selectedIndices][0];
+        const el = elementsRef.current[idx];
+        if (el?.id) {
+          socket.emit('element_editing', { elementId: el.id });
+        }
+      }
+    }
+
+    // Mindmap tool click (Feature 2)
+    if (tool === 'mindmap' && !isViewOnly) {
+      const pos = getCanvasPos(stage);
+      if (pos) {
+        handleMindmapClick(pos.x, pos.y);
+        return;
+      }
+    }
+
+    // Formula tool click (Feature 3)
+    if (tool === 'formula' && !isViewOnly) {
+      const pos = getCanvasPos(stage);
+      if (pos) {
+        handleFormulaCreate(pos.x, pos.y);
+        return;
+      }
+    }
+
+    _handleMouseDown(e);
+  }, [_handleMouseDown, tool, isViewOnly, isCropMode, selectedIndices, elementsRef, getCanvasPos, handleMindmapClick, handleFormulaCreate]);
+
+  const handleMouseUp = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    // Crop handle release (Feature 1)
+    if (cropHandleRef.current) {
+      cropHandleRef.current = null;
+      cropOriginRef.current = null;
+      return;
+    }
+
+    // Feature 6: emit element_edit_stop
+    if (isDraggingSelected.current || isResizingRef.current || isRotatingRef.current) {
+      const idx = [...selectedIndicesRef.current][0];
+      const el = elementsRef.current[idx];
+      if (el?.id) socket.emit('element_edit_stop', { elementId: el.id });
+    }
+
+    void e;
+    _handleMouseUp();
+  }, [_handleMouseUp, isDraggingSelected, isResizingRef, isRotatingRef, selectedIndicesRef, elementsRef]);
+
+  // Wrap handleMouseMove for crop drag (Feature 1)
+  const handleMouseMoveWrapped = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (isCropMode && cropHandleRef.current && cropOriginRef.current) {
+      const stage = e.target.getStage();
+      if (!stage) return;
+      const pos = getCanvasPos(stage);
+      if (!pos) return;
+      const origin = cropOriginRef.current;
+      const dx = pos.x - origin.startPos.x;
+      const dy = pos.y - origin.startPos.y;
+      const origEl = origin.origEl;
+      const img = imageCache.current.get(origEl.imageDataUrl ?? '');
+      const naturalW = img?.naturalWidth ?? (origEl.points[2] || 200);
+      const naturalH = img?.naturalHeight ?? (origEl.points[3] || 200);
+      const imgW = origEl.points[2] || naturalW;
+      const imgH = origEl.points[3] || naturalH;
+      const scaleX = naturalW / imgW, scaleY = naturalH / imgH;
+      const handle = cropHandleRef.current;
+      let cX = origEl.cropX ?? 0;
+      let cY = origEl.cropY ?? 0;
+      let cW = origEl.cropWidth ?? naturalW;
+      let cH = origEl.cropHeight ?? naturalH;
+      const dxNat = dx * scaleX, dyNat = dy * scaleY;
+      if (handle.includes('e')) cW = Math.max(10, (origEl.cropWidth ?? naturalW) + dxNat);
+      if (handle.includes('s')) cH = Math.max(10, (origEl.cropHeight ?? naturalH) + dyNat);
+      if (handle.includes('w')) { cX = Math.min(origEl.cropX ?? 0) + dxNat; cW = Math.max(10, (origEl.cropWidth ?? naturalW) - dxNat); }
+      if (handle.includes('n')) { cY = (origEl.cropY ?? 0) + dyNat; cH = Math.max(10, (origEl.cropHeight ?? naturalH) - dyNat); }
+      cX = Math.max(0, Math.min(cX, naturalW - 10));
+      cY = Math.max(0, Math.min(cY, naturalH - 10));
+      cW = Math.min(cW, naturalW - cX);
+      cH = Math.min(cH, naturalH - cY);
+      const idx = [...selectedIndicesRef.current][0];
+      if (idx === undefined) return;
+      setElements(prev => {
+        const upd = [...prev];
+        upd[idx] = { ...upd[idx], cropX: cX, cropY: cY, cropWidth: cW, cropHeight: cH };
+        return upd;
+      });
+      return;
+    }
+    handleMouseMove(e);
+  }, [isCropMode, handleMouseMove, getCanvasPos, imageCache, selectedIndicesRef, setElements]);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -1198,6 +1556,58 @@ export default function Board() {
     return { selectionRects, groupRects, resizeHandles };
   }, [selectedIndices, elements, stageScale, tool, isViewOnly]);
 
+  // ── Feature 1: Crop handles (when in crop mode) ──
+  const cropHandles = useMemo(() => {
+    if (!isCropMode || selectedIndices.size !== 1) return [];
+    const idx = [...selectedIndices][0];
+    const el = elements[idx];
+    if (!el || el.tool !== 'image') return [];
+    const b = getElementBounds(el);
+    if (!b) return [];
+    const img = imageCache.current.get(el.imageDataUrl ?? '');
+    const naturalW = img?.naturalWidth ?? (el.points[2] || 200);
+    const naturalH = img?.naturalHeight ?? (el.points[3] || 200);
+    const cropX = el.cropX ?? 0;
+    const cropY = el.cropY ?? 0;
+    const cropW = el.cropWidth ?? naturalW;
+    const cropH = el.cropHeight ?? naturalH;
+    // Map crop coords to canvas coords
+    const imgW = el.points[2] || naturalW;
+    const imgH = el.points[3] || naturalH;
+    const imgX = el.points[0], imgY = el.points[1];
+    const scaleX = imgW / naturalW, scaleY = imgH / naturalH;
+    const cx = imgX + cropX * scaleX;
+    const cy = imgY + cropY * scaleY;
+    const cw = cropW * scaleX;
+    const ch = cropH * scaleY;
+    const hs = 8 / stageScale;
+    const green = '#22c55e';
+    const cropHndls = [
+      { name: 'crop-nw', x: cx, y: cy },
+      { name: 'crop-n', x: cx + cw/2, y: cy },
+      { name: 'crop-ne', x: cx + cw, y: cy },
+      { name: 'crop-e', x: cx + cw, y: cy + ch/2 },
+      { name: 'crop-se', x: cx + cw, y: cy + ch },
+      { name: 'crop-s', x: cx + cw/2, y: cy + ch },
+      { name: 'crop-sw', x: cx, y: cy + ch },
+      { name: 'crop-w', x: cx, y: cy + ch/2 },
+    ];
+    return [
+      <Rect key="crop-rect" x={cx} y={cy} width={cw} height={ch}
+        stroke={green} strokeWidth={2/stageScale} dash={[6/stageScale,3/stageScale]}
+        fill="rgba(34,197,94,0.05)" listening={false} />,
+      ...cropHndls.map(h => (
+        <Rect key={h.name} name={h.name}
+          x={h.x - hs/2} y={h.y - hs/2} width={hs} height={hs}
+          fill="white" stroke={green} strokeWidth={1.5/stageScale}
+          cornerRadius={1.5/stageScale} listening={true}
+          onMouseEnter={(e) => { const s = e.target.getStage(); if (s) s.container().style.cursor = RESIZE_CURSORS['resize-' + h.name.replace('crop-', '')] || 'crosshair'; }}
+          onMouseLeave={(e) => { const s = e.target.getStage(); if (s) s.container().style.cursor = ''; }}
+        />
+      ))
+    ];
+  }, [isCropMode, selectedIndices, elements, stageScale]);
+
   const textAreaScreen = textInput ? canvasToScreen(textInput.x, textInput.y) : null;
 
   const iconBtn: React.CSSProperties = { background: 'none', border: 'none', cursor: 'pointer', color: theme.textMuted, display: 'flex', alignItems: 'center', padding: '2px' };
@@ -1283,6 +1693,10 @@ export default function Board() {
         handleShowQRCode={handleShowQRCode}
         brushType={brushType} setBrushType={setBrushType}
         showSearch={showSearch} setShowSearch={setShowSearch}
+        showTemplateGallery={showTemplateGallery} setShowTemplateGallery={setShowTemplateGallery}
+        showShortcutSettings={showShortcutSettings} setShowShortcutSettings={setShowShortcutSettings}
+        showTimer={showTimer} setShowTimer={setShowTimer}
+        showHistoryDiff={showHistoryDiff} setShowHistoryDiff={setShowHistoryDiff}
       />
 
       {/* 저장 인디케이터 */}
@@ -1318,11 +1732,14 @@ export default function Board() {
         />
       )}
 
-      {/* 줌 인디케이터 */}
+      {/* 줌 슬라이더 (Feature 8) */}
       <div style={{ position:'absolute', bottom:'20px', left:'50%', transform:'translateX(-50%)', zIndex:10, display:'flex', alignItems:'center', gap:'8px', padding:'6px 14px', backgroundColor: theme.panel, borderRadius:'20px', boxShadow: theme.shadow, fontSize:'13px', color: theme.textMuted }}>
-        <button onClick={() => { const ns = Math.max(stageScale/1.2, 0.05); setStageScale(ns); }} title="축소" style={{ ...iconBtn, padding:'0' }}><ZoomOut size={16}/></button>
+        <button onClick={() => setStageScale(prev => Math.max(prev / 1.25, 0.05))} title="축소 (-)" style={{ ...iconBtn, padding:'0' }}><ZoomOut size={16}/></button>
+        <input type="range" min="5" max="1000" value={Math.round(stageScale * 100)}
+          onChange={(e) => setStageScale(Number(e.target.value) / 100)}
+          style={{ width:'80px', accentColor:'#3b82f6' }} />
         <span style={{ minWidth:'44px', textAlign:'center', fontWeight:'bold', color: theme.text }}>{Math.round(stageScale*100)}%</span>
-        <button onClick={() => { const ns = Math.min(stageScale*1.2, 10); setStageScale(ns); }} title="확대" style={{ ...iconBtn, padding:'0' }}><ZoomIn size={16}/></button>
+        <button onClick={() => setStageScale(prev => Math.min(prev * 1.25, 10))} title="확대 (=)" style={{ ...iconBtn, padding:'0' }}><ZoomIn size={16}/></button>
         <span style={{ width:'1px', height:'14px', backgroundColor: theme.border }} />
         <button onClick={() => { setStageScale(1); setStagePos({x:0,y:0}); }} title="리셋 (Ctrl+0)" style={{ ...iconBtn, fontSize:'11px', padding:'0' }}>100%</button>
         <span style={{ width:'1px', height:'14px', backgroundColor: theme.border }} />
@@ -1370,8 +1787,55 @@ export default function Board() {
             {[...selectedIndices].every(i => elements[i]?.locked) ? <Unlock size={18}/> : <Lock size={18}/>}
           </button>
           <button onClick={deleteSelected} title="삭제 (Del)" style={{ ...layerBtn(), color:'#ef4444' }}><Trash2 size={18}/></button>
+          {/* Feature 1: Crop button for single image */}
+          {selectedIndices.size === 1 && singleIdx !== null && elements[singleIdx]?.tool === 'image' && (
+            <>
+              <span style={{ width:'1px', height:'20px', backgroundColor: theme.border, margin:'0 4px' }} />
+              <button
+                onClick={() => setIsCropMode(v => !v)}
+                style={{ padding:'2px 8px', borderRadius:'6px', fontSize:'12px', cursor:'pointer', border: isCropMode ? '2px solid #22c55e' : `1px solid ${theme.border}`, background: isCropMode ? '#dcfce7' : 'none', color: isCropMode ? '#16a34a' : theme.textMuted }}>
+                ✂️ 크롭
+              </button>
+              {isCropMode && (
+                <button
+                  onClick={() => {
+                    const upd = [...elements];
+                    upd[singleIdx] = { ...upd[singleIdx], cropX: undefined, cropY: undefined, cropWidth: undefined, cropHeight: undefined };
+                    setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
+                  }}
+                  style={{ padding:'2px 8px', borderRadius:'6px', fontSize:'12px', cursor:'pointer', border:`1px solid ${theme.border}`, background:'none', color:'#ef4444' }}>
+                  크롭 초기화
+                </button>
+              )}
+            </>
+          )}
         </div>
       )}
+
+      {/* Feature 11: Bulk Color Change (multiple selection) */}
+      {selectedIndices.size > 1 && !isViewOnly && (() => {
+        const selArr = [...selectedIndices];
+        const bounds = selArr.map(i => getElementBounds(elements[i])).filter(Boolean);
+        if (bounds.length === 0) return null;
+        const minX = Math.min(...bounds.map(b => b!.x));
+        const minY = Math.min(...bounds.map(b => b!.y));
+        const sc = canvasToScreen(minX, minY);
+        return (
+          <div style={{ position:'absolute', left: sc.x, top: Math.max(sc.y - 70, 10), zIndex:20, display:'flex', gap:'8px', padding:'8px 12px', backgroundColor: theme.panel, borderRadius:'12px', boxShadow: theme.shadow, alignItems:'center', border:`1px solid ${theme.border}` }}>
+            <span style={{ fontSize:'11px', color: theme.textMuted, whiteSpace:'nowrap' }}>일괄 변경</span>
+            <label title="색상" style={{ position:'relative', width:'28px', height:'28px', cursor:'pointer' }}>
+              <input type="color" value={bulkColor} onChange={(e) => {
+                const color = e.target.value;
+                setBulkColor(color);
+                const upd = [...elements];
+                selArr.forEach(idx => { if (!upd[idx].locked) upd[idx] = { ...upd[idx], color }; });
+                setElements(upd); saveHistoryWith(upd); socket.emit('draw_line', upd);
+              }} style={{ position:'absolute', opacity:0, width:'100%', height:'100%', cursor:'pointer' }} />
+              <div style={{ width:'28px', height:'28px', borderRadius:'50%', backgroundColor: bulkColor, border:`2px solid ${theme.border}` }} />
+            </label>
+          </div>
+        );
+      })()}
 
       {/* 접속자 목록 */}
       <div style={{ position:'absolute', top:'20px', right:'20px', zIndex:10, backgroundColor: theme.panel, padding:'14px', borderRadius:'12px', boxShadow: theme.shadow, width:'190px' }}>
@@ -1445,9 +1909,12 @@ export default function Board() {
       {Object.entries(cursors).map(([id, cur]) => {
         const sc = canvasToScreen(cur.x, cur.y);
         return (
-          <div key={id} style={{ position:'absolute', left:sc.x, top:sc.y, zIndex:15, pointerEvents:'none', transform:'translate(-4px,-4px)' }}>
-            <div style={{ width:'12px', height:'12px', borderRadius:'50%', backgroundColor:getCursorColor(id), border:'2px solid white', boxShadow:'0 0 4px rgba(0,0,0,0.3)' }}/>
-            <div style={{ position:'absolute', top:'14px', left:'8px', fontSize:'11px', fontWeight:'bold', color:'white', backgroundColor:getCursorColor(id), padding:'1px 6px', borderRadius:'4px', whiteSpace:'nowrap', boxShadow:'0 1px 3px rgba(0,0,0,0.2)' }}>
+          <div key={id} style={{ position:'absolute', left:sc.x, top:sc.y, zIndex:15, pointerEvents:'auto', transform:'translate(-4px,-4px)' }}>
+            <div style={{ width:'12px', height:'12px', borderRadius:'50%', backgroundColor:getCursorColor(id), border:'2px solid white', boxShadow:'0 0 4px rgba(0,0,0,0.3)', pointerEvents:'none' }}/>
+            <div
+              onClick={() => { setDmTarget({ userId: id, nickname: cur.nickname }); setDmInput(''); }}
+              title={`${cur.nickname}에게 DM 보내기`}
+              style={{ position:'absolute', top:'14px', left:'8px', fontSize:'11px', fontWeight:'bold', color:'white', backgroundColor:getCursorColor(id), padding:'1px 6px', borderRadius:'4px', whiteSpace:'nowrap', boxShadow:'0 1px 3px rgba(0,0,0,0.2)', cursor:'pointer' }}>
               {cur.nickname}
             </div>
           </div>
@@ -1595,9 +2062,12 @@ export default function Board() {
         x={stagePos.x}
         y={stagePos.y}
         onMouseDown={isLaserMode ? undefined : handleMouseDown}
-        onMouseMove={(e) => { if (isLaserMode) handleLaserMove(e); else handleMouseMove(e); }}
+        onMouseMove={(e) => { if (isLaserMode) handleLaserMove(e); else handleMouseMoveWrapped(e); }}
         onMouseUp={isLaserMode ? undefined : handleMouseUp}
         onDblClick={isLaserMode ? undefined : handleDblClick}
+        onTouchStart={(e) => handleTouchStart(e.evt)}
+        onTouchMove={(e) => handleTouchMove(e.evt)}
+        onTouchEnd={handleTouchEnd}
         onContextMenu={(e) => {
           e.evt.preventDefault();
           if (selectedIndices.size > 0) {
@@ -1608,10 +2078,45 @@ export default function Board() {
       >
         <Layer>
           {bgKonvaImage && <KonvaImage image={bgKonvaImage} x={0} y={0} opacity={0.35} listening={false} />}
-          {elements.map((el, i) => hiddenIndices.has(i) ? null : renderElement(el, i, stageScale, imageCache, elements))}
+          {elements.map((el, i) => {
+            if (hiddenIndices.has(i)) return null;
+            if (el.tool === 'mindmap') return renderMindmapNode(el, i, stageScale);
+            if (el.tool === 'formula') return renderFormulaElement(el, i, formulaCache);
+            return renderElement(el, i, stageScale, imageCache, elements);
+          })}
+          {/* Mindmap connection lines */}
+          {elements.map((el, i) => {
+            if (el.tool !== 'mindmap' || !el.mindmapChildren?.length) return null;
+            return el.mindmapChildren.map(childId => {
+              const child = elements.find(e => e.id === childId);
+              if (!child) return null;
+              return (
+                <KonvaArrow key={`mm-conn-${i}-${childId}`}
+                  points={[el.points[0], el.points[1], child.points[0], child.points[1]]}
+                  stroke="#94a3b8" strokeWidth={1.5 / stageScale}
+                  fill="#94a3b8" pointerLength={8/stageScale} pointerWidth={6/stageScale}
+                  listening={false} />
+              );
+            });
+          })}
+          {/* Feature 6: Edit indicators */}
+          {Object.entries(editingIndicators).map(([elementId, info]) => {
+            const el = elements.find(e => e.id === elementId);
+            if (!el) return null;
+            const b = getElementBounds(el);
+            if (!b) return null;
+            return (
+              <Rect key={`editing-${elementId}`}
+                x={b.x - 6} y={b.y - 6} width={b.width + 12} height={b.height + 12}
+                stroke={info.color} strokeWidth={2 / stageScale}
+                fill="transparent" cornerRadius={4}
+                dash={[6/stageScale, 3/stageScale]} listening={false} />
+            );
+          })}
           {selectionRects}
           {groupRects}
           {resizeHandles}
+          {cropHandles}
           {boxSelectRect && (
             <Rect
               x={Math.min(boxSelectRect.x, boxSelectRect.x + boxSelectRect.width)}
@@ -1736,6 +2241,156 @@ export default function Board() {
           onClose={() => setIsPresentingMode(false)}
         />
       )}
+
+      {/* Feature 9: Template Gallery */}
+      {showTemplateGallery && (
+        <TemplateGallery
+          theme={theme}
+          onLoad={(els) => { setElements(els); setSelectedIndices(new Set()); saveHistoryWith(els); socket.emit('draw_line', els); }}
+          onClose={() => setShowTemplateGallery(false)}
+        />
+      )}
+
+      {/* Feature 10: Shortcut Settings */}
+      {showShortcutSettings && (
+        <ShortcutSettings
+          theme={theme}
+          currentShortcuts={customShortcuts}
+          onSave={(sc) => { setCustomShortcuts(sc); localStorage.setItem('whiteboard-shortcuts', JSON.stringify(sc)); showToast('단축키가 저장되었습니다', 'info'); }}
+          onClose={() => setShowShortcutSettings(false)}
+        />
+      )}
+
+      {/* Feature 12: Timer Widget */}
+      {showTimer && (
+        <div
+          style={{ position:'absolute', left: timerPosState.x, top: timerPosState.y, zIndex:50, backgroundColor: theme.panel, borderRadius:'12px', boxShadow: theme.shadow, border:`1px solid ${theme.border}`, padding:'12px 16px', minWidth:'200px', userSelect:'none' }}
+          onMouseDown={(e) => {
+            timerDragStart.current = { mx: e.clientX, my: e.clientY, sx: timerPosState.x, sy: timerPosState.y };
+            const move = (ev: MouseEvent) => {
+              if (!timerDragStart.current) return;
+              setTimerPosState({ x: timerDragStart.current.sx + ev.clientX - timerDragStart.current.mx, y: timerDragStart.current.sy + ev.clientY - timerDragStart.current.my });
+            };
+            const up = () => { timerDragStart.current = null; window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+            window.addEventListener('mousemove', move);
+            window.addEventListener('mouseup', up);
+          }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px' }}>
+            <span style={{ fontSize:'12px', fontWeight:'bold', color: theme.textMuted, cursor:'grab' }}>⏱ 타이머</span>
+            <div style={{ display:'flex', gap:'4px' }}>
+              <button onClick={() => setTimerState(prev => ({ ...prev, mode: prev.mode === 'up' ? 'down' : 'up' }))}
+                style={{ fontSize:'10px', padding:'2px 6px', borderRadius:'4px', border:`1px solid ${theme.border}`, cursor:'pointer', background:'none', color: theme.textMuted }}>
+                {timerState.mode === 'up' ? '카운트업' : '카운트다운'}
+              </button>
+              <button onClick={() => setShowTimer(false)} style={{ background:'none', border:'none', cursor:'pointer', color: theme.textMuted, fontSize:'14px' }}>✕</button>
+            </div>
+          </div>
+          <div style={{ textAlign:'center', fontSize:'36px', fontWeight:'bold', color: theme.text, fontFamily:'monospace', marginBottom:'8px' }}>
+            {String(Math.floor(timerState.seconds / 60)).padStart(2, '0')}:{String(timerState.seconds % 60).padStart(2, '0')}
+          </div>
+          {timerState.mode === 'down' && (
+            <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'8px' }}>
+              <span style={{ fontSize:'11px', color: theme.textMuted }}>목표:</span>
+              <input type="number" min="1" max="3600" value={Math.floor(timerState.targetSeconds / 60)}
+                onChange={(e) => setTimerState(prev => ({ ...prev, targetSeconds: Number(e.target.value) * 60, seconds: Number(e.target.value) * 60 }))}
+                style={{ width:'50px', padding:'2px 4px', border:`1px solid ${theme.border}`, borderRadius:'4px', fontSize:'12px' }} />
+              <span style={{ fontSize:'11px', color: theme.textMuted }}>분</span>
+            </div>
+          )}
+          <div style={{ display:'flex', gap:'6px', justifyContent:'center' }}>
+            <button
+              onClick={() => {
+                const next = { ...timerState, isRunning: !timerState.isRunning };
+                if (!timerState.isRunning && timerState.mode === 'down' && timerState.seconds === 0) {
+                  next.seconds = timerState.targetSeconds;
+                }
+                setTimerState(next);
+                socket.emit('timer_sync', next);
+              }}
+              style={{ padding:'4px 14px', borderRadius:'6px', border:'none', background: timerState.isRunning ? '#ef4444' : '#22c55e', color:'white', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }}>
+              {timerState.isRunning ? '⏸' : '▶'}
+            </button>
+            <button
+              onClick={() => {
+                const next = { ...timerState, isRunning: false, seconds: timerState.mode === 'down' ? timerState.targetSeconds : 0 };
+                setTimerState(next);
+                socket.emit('timer_sync', next);
+              }}
+              style={{ padding:'4px 14px', borderRadius:'6px', border:`1px solid ${theme.border}`, background:'none', color: theme.textMuted, cursor:'pointer', fontSize:'13px' }}>
+              ↺
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Feature 5: DM Modal */}
+      {dmTarget && (
+        <div style={{ position:'fixed', inset:0, zIndex:200, backgroundColor:'rgba(0,0,0,0.3)', display:'flex', alignItems:'center', justifyContent:'center' }}
+          onClick={() => setDmTarget(null)}>
+          <div style={{ backgroundColor: theme.panel, borderRadius:'12px', padding:'20px', width:'320px', boxShadow: theme.shadow }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize:'16px', fontWeight:'bold', color: theme.text, marginBottom:'12px' }}>
+              💬 {dmTarget.nickname}에게 DM
+            </div>
+            <input
+              autoFocus
+              value={dmInput}
+              onChange={(e) => setDmInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && dmInput.trim()) {
+                  socket.emit('dm_message', { to: dmTarget.userId, text: dmInput });
+                  showToast(`💬 ${dmTarget.nickname}에게 전송됨`, 'info');
+                  setDmTarget(null); setDmInput('');
+                }
+                if (e.key === 'Escape') setDmTarget(null);
+              }}
+              placeholder="메시지 입력 후 Enter..."
+              style={{ width:'100%', padding:'8px', border:`1px solid ${theme.border}`, borderRadius:'6px', fontSize:'14px', outline:'none', boxSizing:'border-box' }}
+            />
+            <div style={{ display:'flex', gap:'8px', marginTop:'10px', justifyContent:'flex-end' }}>
+              <button onClick={() => setDmTarget(null)} style={{ padding:'6px 14px', borderRadius:'6px', border:`1px solid ${theme.border}`, background:'none', cursor:'pointer', color: theme.textMuted }}>취소</button>
+              <button onClick={() => {
+                if (dmInput.trim()) {
+                  socket.emit('dm_message', { to: dmTarget.userId, text: dmInput });
+                  showToast(`💬 ${dmTarget.nickname}에게 전송됨`, 'info');
+                  setDmTarget(null); setDmInput('');
+                }
+              }} style={{ padding:'6px 14px', borderRadius:'6px', border:'none', background:'#3b82f6', color:'white', cursor:'pointer', fontWeight:'bold' }}>전송</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Feature 5: DM Toasts */}
+      <div style={{ position:'fixed', bottom:'80px', right:'20px', zIndex:200, display:'flex', flexDirection:'column', gap:'8px', pointerEvents:'none' }}>
+        {dmToastList.map(t => (
+          <div key={t.id} style={{ padding:'10px 16px', borderRadius:'8px', fontSize:'13px', fontWeight:'500', backgroundColor:'#8b5cf6', color:'white', boxShadow:'0 4px 12px rgba(0,0,0,0.2)', animation:'slideIn 0.3s ease', maxWidth:'280px' }}>
+            💬 <strong>{t.from}</strong>: {t.text}
+          </div>
+        ))}
+      </div>
+
+      {/* Feature 7: History Diff Panel */}
+      {showHistoryDiff && (
+        <HistoryDiffPanel
+          events={timelineEvents}
+          theme={theme}
+          onClose={() => setShowHistoryDiff(false)}
+        />
+      )}
+
+      {/* Feature 6: Editing indicator labels (HTML overlay) */}
+      {Object.entries(editingIndicators).map(([elementId, info]) => {
+        const el = elements.find(e => e.id === elementId);
+        if (!el) return null;
+        const b = getElementBounds(el);
+        if (!b) return null;
+        const sc = canvasToScreen(b.x + b.width / 2, b.y);
+        return (
+          <div key={`editing-label-${elementId}`} style={{ position:'absolute', left: sc.x, top: sc.y - 20, zIndex:15, pointerEvents:'none', transform:'translateX(-50%)', fontSize:'10px', backgroundColor: info.color, color:'white', padding:'1px 6px', borderRadius:'4px', whiteSpace:'nowrap' }}>
+            ✏️ {info.nickname}
+          </div>
+        );
+      })}
     </div>
   );
 }

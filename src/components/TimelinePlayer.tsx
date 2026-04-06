@@ -6,6 +6,7 @@ export interface TimelineEvent {
   timestamp: number;
   type: 'add' | 'update' | 'delete' | 'clear';
   snapshot: DrawElement[];
+  nickname?: string;
 }
 
 interface Theme {

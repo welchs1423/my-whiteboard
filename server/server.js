@@ -103,7 +103,7 @@ io.on('connection', (socket) => {
     roomElements[user.room] = data;
     // 타임라인 기록
     if (!roomTimelines[user.room]) roomTimelines[user.room] = [];
-    roomTimelines[user.room].push({ timestamp: Date.now(), type: 'update', snapshot: [...data] });
+    roomTimelines[user.room].push({ timestamp: Date.now(), type: 'update', snapshot: [...data], nickname: user.nickname });
     if (roomTimelines[user.room].length > 500) roomTimelines[user.room] = roomTimelines[user.room].slice(-500);
     debouncedSave(user.room);
   });
@@ -211,6 +211,32 @@ io.on('connection', (socket) => {
   socket.on('send_message', (messageData) => { const user = users[socket.id]; if (user) io.to(user.room).emit('receive_message', messageData); });
   socket.on('viewport_update', (data) => { const user = users[socket.id]; if (user) socket.to(user.room).emit('viewport_update', { id: socket.id, nickname: user.nickname, scale: data.scale, x: data.x, y: data.y }); });
   socket.on('emoji_reaction', (data) => { const user = users[socket.id]; if (user) io.to(user.room).emit('emoji_reaction', { id: data.id, x: data.x, y: data.y, emoji: data.emoji, nickname: user.nickname }); });
+
+  // ── DM (귓속말) ──
+  socket.on('dm_message', (data) => {
+    const user = users[socket.id];
+    if (!user) return;
+    io.to(data.to).emit('receive_dm', { from: user.nickname, text: data.text, fromId: socket.id });
+  });
+
+  // ── 요소 편집 중 표시 ──
+  socket.on('element_editing', ({ elementId }) => {
+    const user = users[socket.id];
+    if (!user) return;
+    socket.to(user.room).emit('element_editing', { elementId, nickname: user.nickname, color: '#f97316', userId: socket.id });
+  });
+  socket.on('element_edit_stop', ({ elementId }) => {
+    const user = users[socket.id];
+    if (!user) return;
+    socket.to(user.room).emit('element_edit_stop', { elementId, userId: socket.id });
+  });
+
+  // ── 타이머 동기화 ──
+  socket.on('timer_sync', (timerState) => {
+    const user = users[socket.id];
+    if (!user) return;
+    socket.to(user.room).emit('timer_sync', timerState);
+  });
 
   socket.on('disconnect', () => {
     const user = users[socket.id];
