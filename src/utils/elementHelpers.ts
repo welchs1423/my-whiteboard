@@ -149,6 +149,70 @@ export function moveElementBy(el: DrawElement, dx: number, dy: number): DrawElem
   return { ...el, points: el.points.map((p, i) => (i % 2 === 0 ? p + dx : p + dy)) };
 }
 
+export type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
+
+const RESIZE_MIN = 10;
+
+/** 리사이즈 핸들 드래그로 엘리먼트 크기 조절 */
+export function resizeElementWithHandle(
+  origEl: DrawElement,
+  handle: ResizeHandle,
+  origBounds: Bounds,
+  dx: number,
+  dy: number,
+): DrawElement {
+  const pad = origEl.strokeWidth / 2 + 2;
+
+  if (['rect', 'circle', 'triangle', 'sticky', 'textbox', 'shape', 'frame', 'arrow', 'straight'].includes(origEl.tool)) {
+    const rawLeft = origBounds.x + pad;
+    const rawTop = origBounds.y + pad;
+    const rawRight = origBounds.x + origBounds.width - pad;
+    const rawBottom = origBounds.y + origBounds.height - pad;
+    let left = rawLeft, top = rawTop, right = rawRight, bottom = rawBottom;
+    if (handle.includes('w')) left = Math.min(rawLeft + dx, rawRight - RESIZE_MIN);
+    if (handle.includes('e')) right = Math.max(rawRight + dx, rawLeft + RESIZE_MIN);
+    if (handle.includes('n')) top = Math.min(rawTop + dy, rawBottom - RESIZE_MIN);
+    if (handle.includes('s')) bottom = Math.max(rawBottom + dy, rawTop + RESIZE_MIN);
+    return { ...origEl, points: [left, top, right, bottom] };
+  }
+
+  if (origEl.tool === 'image') {
+    const ox = origEl.points[0], oy = origEl.points[1];
+    const ow = origEl.points[2] || 200, oh = origEl.points[3] || 200;
+    const oRight = ox + ow, oBottom = oy + oh;
+    let x = ox, y = oy, w = ow, h = oh;
+    if (handle.includes('w')) { x = Math.min(ox + dx, oRight - RESIZE_MIN); w = oRight - x; }
+    if (handle.includes('e')) { w = Math.max(ow + dx, RESIZE_MIN); }
+    if (handle.includes('n')) { y = Math.min(oy + dy, oBottom - RESIZE_MIN); h = oBottom - y; }
+    if (handle.includes('s')) { h = Math.max(oh + dy, RESIZE_MIN); }
+    return { ...origEl, points: [x, y, Math.max(w, RESIZE_MIN), Math.max(h, RESIZE_MIN)] };
+  }
+
+  if (origEl.tool === 'pen' || origEl.tool === 'eraser') {
+    const rawLeft = origBounds.x + pad;
+    const rawTop = origBounds.y + pad;
+    const rawRight = origBounds.x + origBounds.width - pad;
+    const rawBottom = origBounds.y + origBounds.height - pad;
+    const rawW = Math.max(rawRight - rawLeft, 1);
+    const rawH = Math.max(rawBottom - rawTop, 1);
+    let newLeft = rawLeft, newTop = rawTop, newRight = rawRight, newBottom = rawBottom;
+    if (handle.includes('w')) newLeft = Math.min(rawLeft + dx, rawRight - RESIZE_MIN);
+    if (handle.includes('e')) newRight = Math.max(rawRight + dx, rawLeft + RESIZE_MIN);
+    if (handle.includes('n')) newTop = Math.min(rawTop + dy, rawBottom - RESIZE_MIN);
+    if (handle.includes('s')) newBottom = Math.max(rawBottom + dy, rawTop + RESIZE_MIN);
+    const scaleX = (newRight - newLeft) / rawW;
+    const scaleY = (newBottom - newTop) / rawH;
+    return {
+      ...origEl,
+      points: origEl.points.map((p, i) =>
+        i % 2 === 0 ? newLeft + (p - rawLeft) * scaleX : newTop + (p - rawTop) * scaleY
+      ),
+    };
+  }
+
+  return origEl;
+}
+
 // ── 선 매끄럽게 처리 ──────────────────────────────────────────────────────────
 
 /** Douglas-Peucker 점 단순화 (내부 재귀) */

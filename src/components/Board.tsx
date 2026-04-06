@@ -1,3 +1,4 @@
+// Board component
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Stage, Layer, Rect, Image as KonvaImage } from 'react-konva';
 import Konva from 'konva';
@@ -16,6 +17,7 @@ import type { DrawElement, Bounds } from '../utils/elementHelpers';
 import {
   generateId, getElementBounds, moveElementBy,
 } from '../utils/elementHelpers';
+import type { ResizeHandle } from '../utils/elementHelpers';
 import { useHistory } from '../hooks/useHistory';
 import { useSocketEvents } from '../hooks/useSocketEvents';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
@@ -53,6 +55,14 @@ const CURSOR_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#8b5cf6', '#
 const getCursorColor = (id: string) => {
   const hash = id.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
   return CURSOR_COLORS[hash % CURSOR_COLORS.length];
+};
+
+const RESIZABLE_TOOLS = ['rect', 'circle', 'triangle', 'sticky', 'textbox', 'shape', 'frame', 'arrow', 'straight', 'image', 'pen', 'eraser'];
+const RESIZE_CURSORS: Record<string, string> = {
+  'resize-nw': 'nwse-resize', 'resize-ne': 'nesw-resize',
+  'resize-se': 'nwse-resize', 'resize-sw': 'nesw-resize',
+  'resize-n': 'ns-resize', 'resize-s': 'ns-resize',
+  'resize-e': 'ew-resize', 'resize-w': 'ew-resize',
 };
 
 // ── 컴포넌트 ─────────────────────────────────────────────────────────────────
@@ -177,6 +187,11 @@ export default function Board() {
   const [lasers, setLasers] = useState<Record<string, { x: number; y: number; ts: number; nickname: string }>>({});
   const [bgKonvaImage, setBgKonvaImage] = useState<HTMLImageElement | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+
+  // ── 리사이즈 refs ──
+  const isResizingRef = useRef(false);
+  const resizeHandleRef = useRef<ResizeHandle | null>(null);
+  const resizeOriginalRef = useRef<{ el: DrawElement; bounds: Bounds; idx: number; startPos: { x: number; y: number } } | null>(null);
 
   // ── 히스토리 훅 ──
   const { saveHistoryWith, handleUndo, handleRedo, historyRef, historyStepRef } = useHistory(
@@ -662,15 +677,13 @@ export default function Board() {
     if (showTimeline) {
       socket.emit('request_timeline', { room: roomId });
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showTimeline]);
+  }, [showTimeline, roomId]);
 
   // 레이저 포인터 비활성화 시 알림
   useEffect(() => {
     if (!isLaserMode) {
       socket.emit('laser_stop');
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLaserMode]);
 
   // 레이저 점 자동 만료 (2초)
@@ -870,6 +883,7 @@ export default function Board() {
     isBoxSelecting, boxSelectStart, isDraggingSelected, dragStartPos, dragOriginals,
     elementsRef, toolRef, isSmoothingRef, isSmartShapeRef, lastCursorEmit,
     lastPenTime, bezierPhase, bezierAnchor, connectorPhase, connectorFirst,
+    isResizingRef, resizeHandleRef, resizeOriginalRef,
     // State
     contextMenu, elements, selectedIndices, tool,
     isEmojiMode, selectedEmoji, nickname, isViewOnly,
@@ -902,8 +916,8 @@ export default function Board() {
     return 'crosshair';
   };
 
-  // ── 선택 바운딩 박스 ──
-  const { selectionRects, groupRects } = useMemo(() => {
+  // ── 선택 바운딩 박스 & 리사이즈 핸들 ──
+  const { selectionRects, groupRects, resizeHandles } = useMemo(() => {
     const selectionRects = [...selectedIndices].map((idx) => {
       if (idx >= elements.length) return null;
       const b = getElementBounds(elements[idx]);
@@ -944,8 +958,55 @@ export default function Board() {
         fill="rgba(245,158,11,0.04)" listening={false} cornerRadius={4} />
     ));
 
-    return { selectionRects, groupRects };
-  }, [selectedIndices, elements, stageScale]);
+    // 리사이즈 핸들 (단일 선택, select 도구, 잠금되지 않은 요소)
+    let resizeHandles: React.ReactNode[] = [];
+    if (selectedIndices.size === 1 && tool === 'select' && !isViewOnly) {
+      const idx = [...selectedIndices][0];
+      if (idx < elements.length) {
+        const el = elements[idx];
+        const b = getElementBounds(el);
+        if (b && !el.locked && RESIZABLE_TOOLS.includes(el.tool)) {
+          const bx = b.x - 4, by = b.y - 4, bw = b.width + 8, bh = b.height + 8;
+          const hs = 8 / stageScale; // 핸들 크기 (스케일 보정)
+          const handles = [
+            { name: 'resize-nw', x: bx, y: by },
+            { name: 'resize-n',  x: bx + bw / 2, y: by },
+            { name: 'resize-ne', x: bx + bw, y: by },
+            { name: 'resize-e',  x: bx + bw, y: by + bh / 2 },
+            { name: 'resize-se', x: bx + bw, y: by + bh },
+            { name: 'resize-s',  x: bx + bw / 2, y: by + bh },
+            { name: 'resize-sw', x: bx, y: by + bh },
+            { name: 'resize-w',  x: bx, y: by + bh / 2 },
+          ];
+          resizeHandles = handles.map(h => (
+            <Rect
+              key={h.name}
+              name={h.name}
+              x={h.x - hs / 2}
+              y={h.y - hs / 2}
+              width={hs}
+              height={hs}
+              fill="white"
+              stroke="#3b82f6"
+              strokeWidth={1.5 / stageScale}
+              cornerRadius={1.5 / stageScale}
+              listening={true}
+              onMouseEnter={(e) => {
+                const stage = e.target.getStage();
+                if (stage) stage.container().style.cursor = RESIZE_CURSORS[h.name] || 'default';
+              }}
+              onMouseLeave={(e) => {
+                const stage = e.target.getStage();
+                if (stage) stage.container().style.cursor = '';
+              }}
+            />
+          ));
+        }
+      }
+    }
+
+    return { selectionRects, groupRects, resizeHandles };
+  }, [selectedIndices, elements, stageScale, tool, isViewOnly]);
 
   const textAreaScreen = textInput ? canvasToScreen(textInput.x, textInput.y) : null;
 
@@ -1325,6 +1386,7 @@ export default function Board() {
           {elements.map((el, i) => hiddenIndices.has(i) ? null : renderElement(el, i, stageScale, imageCache, elements))}
           {selectionRects}
           {groupRects}
+          {resizeHandles}
           {boxSelectRect && (
             <Rect
               x={Math.min(boxSelectRect.x, boxSelectRect.x + boxSelectRect.width)}

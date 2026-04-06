@@ -97,3 +97,4 @@ A real-time collaborative whiteboard web application built with React, Konva.js,
 - [x] **QR 코드 방 공유:** 현재 방 URL을 QR 이미지로 즉시 생성, 모달에서 확인 및 다른 기기로 스캔 참여
 - [x] **SVG 내보내기:** 캔버스 요소를 SVG 벡터 파일로 저장 (rect·circle·pen·text·arrow·triangle 지원)
 - [x] **캔버스 배경 이미지:** 이미지 파일을 캔버스 배경으로 투사 (35% 불투명도, 드로잉 레이어 하단)
+- [x] **리사이즈 핸들:** 선택 도구로 단일 요소 선택 시 8방향 핸들(4 모서리 + 4 가장자리) 표시 — 드래그로 크기 조절, 호버 시 방향별 커서 변경, 실시간 동기화 및 Undo/Redo 지원 (rect·circle·triangle·sticky·textbox·shape·frame·arrow·straight·image·pen·eraser 지원)

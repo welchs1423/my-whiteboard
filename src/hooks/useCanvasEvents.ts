@@ -4,9 +4,10 @@ import Konva from 'konva';
 import type { Socket } from 'socket.io-client';
 import type { DrawElement, ToolType, DashStyle, Bounds, LineCapStyle } from '../utils/elementHelpers';
 import {
-  generateId, getElementAtPoint, getElementsInRect, moveElementBy,
-  smoothPoints, simplifyPoints, detectSmartShape,
+  generateId, getElementAtPoint, getElementsInRect, getElementBounds, moveElementBy,
+  smoothPoints, simplifyPoints, detectSmartShape, resizeElementWithHandle,
 } from '../utils/elementHelpers';
+import type { ResizeHandle } from '../utils/elementHelpers';
 
 // ── 로컬 인터페이스 ──
 interface EmojiReaction { id: string; x: number; y: number; emoji: string; nickname: string; }
@@ -34,6 +35,10 @@ export interface CanvasEventsParams {
   bezierAnchor: MutableRefObject<number[]>;    // [sx,sy] or [sx,sy,ex,ey]
   connectorPhase: MutableRefObject<number>;    // 0=idle 1=has-first
   connectorFirst: MutableRefObject<{ id: string; x: number; y: number } | null>;
+  // 리사이즈
+  isResizingRef: MutableRefObject<boolean>;
+  resizeHandleRef: MutableRefObject<ResizeHandle | null>;
+  resizeOriginalRef: MutableRefObject<{ el: DrawElement; bounds: Bounds; idx: number; startPos: { x: number; y: number } } | null>;
   // State values
   contextMenu: { x: number; y: number } | null;
   elements: DrawElement[];
@@ -197,6 +202,28 @@ export function useCanvasEvents(p: CanvasEventsParams) {
     }
 
     if (p.tool === 'select') {
+      // 리사이즈 핸들 클릭 감지
+      const targetName = (e.target as Konva.Node).name();
+      if (targetName.startsWith('resize-') && p.selectedIndices.size === 1) {
+        const handle = targetName.replace('resize-', '') as ResizeHandle;
+        const idx = [...p.selectedIndices][0];
+        if (idx < p.elements.length) {
+          const el = p.elements[idx];
+          const bounds = getElementBounds(el);
+          if (bounds && !el.locked) {
+            p.isResizingRef.current = true;
+            p.resizeHandleRef.current = handle;
+            p.resizeOriginalRef.current = {
+              el: { ...el, points: [...el.points] },
+              bounds,
+              idx,
+              startPos: pos,
+            };
+            return;
+          }
+        }
+      }
+
       const idx = getElementAtPoint(p.elements, pos.x, pos.y);
       if (idx === null) {
         if (!e.evt.shiftKey) p.setSelectedIndices(new Set());
@@ -278,6 +305,23 @@ export function useCanvasEvents(p: CanvasEventsParams) {
     }
 
     if (p.toolRef.current === 'select') {
+      // 리사이즈 처리
+      if (p.isResizingRef.current && p.resizeOriginalRef.current) {
+        const { el: origEl, bounds: origBounds, idx, startPos } = p.resizeOriginalRef.current;
+        const dx = point.x - startPos.x;
+        const dy = point.y - startPos.y;
+        const resized = resizeElementWithHandle(origEl, p.resizeHandleRef.current!, origBounds, dx, dy);
+        p.setElements(prev => {
+          const upd = [...prev];
+          if (idx < upd.length) {
+            upd[idx] = resized;
+            p.socket.emit('update_element', resized);
+          }
+          return upd;
+        });
+        return;
+      }
+
       if (p.isDraggingSelected.current && p.dragStartPos.current && p.dragOriginals.current.length) {
         const dx = p.snap(point.x) - p.snap(p.dragStartPos.current.x);
         const dy = p.snap(point.y) - p.snap(p.dragStartPos.current.y);
@@ -342,6 +386,15 @@ export function useCanvasEvents(p: CanvasEventsParams) {
     if (p.isPanning.current) { p.isPanning.current = false; p.panStart.current = null; return; }
 
     if (p.toolRef.current === 'select') {
+      // 리사이즈 완료
+      if (p.isResizingRef.current) {
+        p.isResizingRef.current = false;
+        p.resizeHandleRef.current = null;
+        p.resizeOriginalRef.current = null;
+        p.setElements(latest => { p.saveHistoryWith(latest); return latest; });
+        return;
+      }
+
       if (p.isDraggingSelected.current) {
         p.isDraggingSelected.current = false;
         p.dragStartPos.current = null;
@@ -383,7 +436,7 @@ export function useCanvasEvents(p: CanvasEventsParams) {
           const ny = Math.min(last.points[1], last.points[3]) + 6;
           const w = Math.abs(last.points[2] - last.points[0]) - 12;
           const h = Math.abs(last.points[3] - last.points[1]) - 12;
-          p.setTextInput({ x: nx, y: ny, value: '', targetIdx: latest.length - 1, width: w, height: h });
+          p.setTextInput({ x: nx, y: ny, value: '', targetIdx: latest.length - 1, width: w, height: h } as unknown as TextInputState);
         }
         return latest;
       });
@@ -444,7 +497,7 @@ export function useCanvasEvents(p: CanvasEventsParams) {
       const ny = Math.min(el.points[1], el.points[3]) + 6;
       const w = Math.abs(el.points[2] - el.points[0]) - 12;
       const h = Math.abs(el.points[3] - el.points[1]) - 12;
-      p.setTextInput({ x: nx, y: ny, value: el.text || '', targetIdx: idx, width: w, height: h });
+      p.setTextInput({ x: nx, y: ny, value: el.text || '', targetIdx: idx, width: w, height: h } as unknown as TextInputState);
     } else if (el.tool === 'pin') {
       p.setTextInput({ x: el.points[0] + 18, y: el.points[1] - 30, value: el.pinText || el.text || '', targetIdx: idx });
     }
